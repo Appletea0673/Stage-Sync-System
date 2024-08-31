@@ -16,9 +16,10 @@
  - 外部操作防止用Collider<br>
   VRChatの仕様でUIへRaycastが遠方から届いてしまい誤操作を招く問題があるため、UIの周囲をColliderで囲ってあります。
 
-
 ## 仕様
  - Event driven型システム<br>
   Event driven型システムで必要な時に同期処理が走るため上映中は低負荷での運用が可能です。
  - LateJoiner対応<br>
   Joinしてから読み込まれるまで同期を取るためJoin直後でも高精度な同期を実現します。
+ - iwaSyncの導入が前提<br>
+  本プログラムはiwaSyncの導入が前提です。
