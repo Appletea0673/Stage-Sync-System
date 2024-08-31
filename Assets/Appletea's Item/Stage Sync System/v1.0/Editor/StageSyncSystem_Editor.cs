@@ -5,9 +5,6 @@ using System.Linq;
 using UnityEngine.UI;
 using System.Collections.Generic;
 using System;
-using System.Reflection;
-using UdonSharp;
-using UnityEditor.TestTools.TestRunner.Api;
 
 namespace AppleteaSystems.StageSyncSystem
 {
@@ -15,14 +12,14 @@ namespace AppleteaSystems.StageSyncSystem
     [CustomEditor(typeof(DirectionController))]
     public class StageSyncSystem_Editor : Editor
     {
-        SerializedProperty directionSWRootPath;
-        SerializedProperty directionSW_BaseName;
-        SerializedProperty _directions;
+        //SerializeObjectでScriptのInstanceを管理
+        SerializedObject SSS_Core;
+        SerializedObject directionController;
 
-        DirectionController _directionController;
         Texture2D Thumbnail;
+        SSSCore _SSSCore;
+        DirectionController _directionController;
 
-        SSSCore _SSS_Core;
         VideoCore _Iwasync_Core = null;
         DirectionObject[] _directionList;
 
@@ -35,26 +32,37 @@ namespace AppleteaSystems.StageSyncSystem
         {
             //必要なデータ回収
             _directionController = (DirectionController)target;
+            directionController = new SerializedObject(_directionController);
             Thumbnail = AssetDatabase.LoadAssetAtPath<Texture2D>(AssetDatabase.GUIDToAssetPath("e53f95351d21c2041a16114955a6534b"));
 
-            //CoreのSet
-            _SSS_Core = GetSSSCore();
+            //Coreの取得
+            _SSSCore = GetSSSCore();
+            SSS_Core = new SerializedObject(_SSSCore);
+
             _Iwasync_Core = GetIwasyncCore();
-            if (_Iwasync_Core != null) SetIwasyncCore(_Iwasync_Core, _SSS_Core);
-            SetSSSCore(_directionController, _SSS_Core);
+            if (_Iwasync_Core != null) SetIwasyncCore(_Iwasync_Core, SSS_Core);
+            SetSSSCore(directionController, _SSSCore);
 
             //演出の取得
             GetDirectionList(out _directionList);
+            List<GameObject> directionSWList = new List<GameObject>();
             //UIスイッチへ反映
             //SW全削除
             Transform DirectorSWRoot = _directionController.transform.Find(_directionSWRootPath);
             if (_directionList != null)
             {
                 DeleteDirectionSW(DirectorSWRoot, _directionSW_BaseName);
-                GenerateDirectionSW(DirectorSWRoot, _directionSW_BaseName, _directionList);
+                directionSWList = GenerateDirectionSW(DirectorSWRoot, _directionSW_BaseName, _directionList);
             }
-            SettingDirection_Controller(_directionController, _directionSWRootPath, _directionSW_BaseName);
-            SettingDirection_Core(_SSS_Core, _directionList);
+            SettingDirection_Controller(directionController, directionSWList);
+            SettingDirection_Core(SSS_Core, _directionList);
+        }
+
+        private void OnValidate()
+        {
+            
+            
+            
         }
 
         //各工程をClassにまとめて処理した方がいいと考えられる。
@@ -78,18 +86,15 @@ namespace AppleteaSystems.StageSyncSystem
             Array.Sort(directionList, (x, y) => string.Compare(x.directionName, y.directionName));
         }
 
-        private void SetIwasyncCore(VideoCore Iwasync_Core, SSSCore SSS_Core)
+        private void SetIwasyncCore(VideoCore Iwasync_Core, SerializedObject SSS_Core)
         {
-            Undo.RecordObject(target, "SetIwasyncCore");
-            SSS_Core.IwasyncCore = Iwasync_Core;
-            EditorUtility.SetDirty(SSS_Core);
+            SSS_Core.FindProperty("Iwasync_core").objectReferenceValue = Iwasync_Core;
+            SSS_Core.ApplyModifiedProperties();
         }
 
-        private void SetSSSCore(DirectionController directionController, SSSCore SSS_Core)
+        private void SetSSSCore(SerializedObject directionController, SSSCore SSS_Core)
         {
-            Undo.RecordObject(target, "SetSSSCore");
-            directionController.SSS_core = SSS_Core;
-            EditorUtility.SetDirty(directionController);
+            directionController.FindProperty("SSS_core").objectReferenceValue = SSS_Core;
         }
         
         private void DeleteDirectionSW(Transform DirectorSWRoot, string directionSW_BaseName)
@@ -112,43 +117,58 @@ namespace AppleteaSystems.StageSyncSystem
             for (int i = 0; i < directionList.Length; i++)
             {
                 //Prefabから生成しない理由として、Buttonコンポーネントの設定項目がPrefabにすると消えてしまう為
-                Undo.RecordObject(target, "InstantiateSW");
                 GameObject temp = Instantiate(directionSW_Base, DirectorSWRoot, false);
                 temp.SetActive(true);
                 //temp.name = i.ToString();
                 Text Title = temp.transform.Find("Button/Text").GetComponent<Text>();
                 Title.text = directionList[i].GetComponent<DirectionObject>().directionName;
-                EditorUtility.SetDirty(temp);
                 tempList.Add(temp);
             }
-            return tempList;
+            return tempList; 
         }
 
 
         //ここGenericでまとめれそう
-        private void SettingDirection_Controller(DirectionController directionController, string directionSWRootPath, string directionSW_BaseName)
+        private void SettingDirection_Controller(SerializedObject directionController, in List<GameObject> directionSWList)
         {
-            //データをすべて渡して実行時の計算を削減する予定だったが、Play時に代入値がnullになる問題があった為、Pathを渡してScript側で探索
-            //if (directionSWList != null) directionController.GetComponent<DirectionController>().DirectionSWs = directionSWList.Select(directionSWList => directionSWList.transform.Find("Button").GetComponent<UnityEngine.UI.Button>()).ToArray();
-            //else directionController.GetComponent<DirectionController>().DirectionSWs = null;
-            //directionController.GetComponent<DirectionController>().DirectionSWRootPath = directionSWRootPath;
-            //directionController.GetComponent<DirectionController>().DirectionSWBaseName = directionSW_BaseName;
-            Undo.RecordObject(target, "SetDirection");
-            directionController._directionSWRootPath = directionSWRootPath;
-            directionController._directionSW_BaseName = directionSW_BaseName;
-            EditorUtility.SetDirty(directionController);
+            if (directionSWList == null) return;
+
+            SerializedProperty DirectionSWs = directionController.FindProperty("_directionSWs");
+
+            DirectionSWs.arraySize = directionSWList.Count;
+
+            // 各要素にアクセスして値を設定
+            for (int i = 0; i < directionSWList.Count; i++)
+            {
+                SerializedProperty element = DirectionSWs.GetArrayElementAtIndex(i);
+                element.objectReferenceValue = directionSWList[i].transform.Find("Button").GetComponent<UnityEngine.UI.Button>();
+                Debug.Log(directionSWList[i]);
+                Debug.Log(directionSWList[i].transform.Find("Button").GetComponent<UnityEngine.UI.Button>());
+            }
         }
 
-        private void SettingDirection_Core(SSSCore Core, in DirectionObject[] directionList)
+        private void SettingDirection_Core(SerializedObject Core, in DirectionObject[] directionList)
         {
-            if (directionList != null) Core.Directions = directionList.ToArray();
-            else Core.Directions = null;
+            if (directionList == null) return;
+
+            SerializedProperty Directions = Core.FindProperty("_directions");
+
+            Directions.arraySize = directionList.Length;
+
+            // 各要素にアクセスして値を設定
+            for (int i = 0; i < directionList.Length; i++)
+            {
+                SerializedProperty element = Directions.GetArrayElementAtIndex(i);
+                element.objectReferenceValue = directionList[i];
+            }
         }
 
         public override void OnInspectorGUI()
         {
             //サムネイル
             if (Thumbnail != null) ImageOnGUI(Thumbnail);
+
+            base.OnInspectorGUI();
 
             if (Application.isPlaying)
             {
