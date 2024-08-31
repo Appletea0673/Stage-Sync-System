@@ -95,6 +95,7 @@ namespace AppleteaSystems.StageSyncSystem
         private void SetSSSCore(SerializedObject directionController, SSSCore SSS_Core)
         {
             directionController.FindProperty("SSS_core").objectReferenceValue = SSS_Core;
+            directionController.ApplyModifiedProperties();
         }
         
         private void DeleteDirectionSW(Transform DirectorSWRoot, string directionSW_BaseName)
@@ -131,10 +132,14 @@ namespace AppleteaSystems.StageSyncSystem
         //ここGenericでまとめれそう
         private void SettingDirection_Controller(SerializedObject directionController, in List<GameObject> directionSWList)
         {
-            if (directionSWList == null) return;
-
             SerializedProperty DirectionSWs = directionController.FindProperty("_directionSWs");
 
+            if (directionSWList == null)
+            {
+                DirectionSWs.arraySize = 0;
+                directionController.ApplyModifiedProperties();
+                return;
+            }
             DirectionSWs.arraySize = directionSWList.Count;
 
             // 各要素にアクセスして値を設定
@@ -142,17 +147,20 @@ namespace AppleteaSystems.StageSyncSystem
             {
                 SerializedProperty element = DirectionSWs.GetArrayElementAtIndex(i);
                 element.objectReferenceValue = directionSWList[i].transform.Find("Button").GetComponent<UnityEngine.UI.Button>();
-                Debug.Log(directionSWList[i]);
-                Debug.Log(directionSWList[i].transform.Find("Button").GetComponent<UnityEngine.UI.Button>());
             }
+            directionController.ApplyModifiedProperties();
         }
 
         private void SettingDirection_Core(SerializedObject Core, in DirectionObject[] directionList)
         {
-            if (directionList == null) return;
-
             SerializedProperty Directions = Core.FindProperty("_directions");
 
+            if (directionList == null)
+            {
+                Directions.arraySize = 0;
+                Core.ApplyModifiedProperties();
+                return;
+            }
             Directions.arraySize = directionList.Length;
 
             // 各要素にアクセスして値を設定
@@ -161,6 +169,7 @@ namespace AppleteaSystems.StageSyncSystem
                 SerializedProperty element = Directions.GetArrayElementAtIndex(i);
                 element.objectReferenceValue = directionList[i];
             }
+            Core.ApplyModifiedProperties();
         }
 
         public override void OnInspectorGUI()

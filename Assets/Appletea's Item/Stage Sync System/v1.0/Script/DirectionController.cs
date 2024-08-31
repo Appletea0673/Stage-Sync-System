@@ -10,10 +10,12 @@ namespace AppleteaSystems.StageSyncSystem
     public class DirectionController : UdonSharpBehaviour
     {
         [Header("Base")]
-        public SSSCore SSS_core;
+        [SerializeField]
+        SSSCore SSS_core;
 
         //Serialize化しつつInspectorから隠す措置
-        public Button[] _directionSWs;
+        [SerializeField]
+        Button[] _directionSWs;
 
         public void OnButtonClicked()
         {
