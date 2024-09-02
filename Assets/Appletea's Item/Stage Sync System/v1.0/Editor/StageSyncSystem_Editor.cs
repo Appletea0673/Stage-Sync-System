@@ -30,6 +30,8 @@ namespace AppleteaSystems.StageSyncSystem
 
         private void OnEnable()
         {
+            if (Application.isPlaying) return;
+
             //必要なデータ回収
             _directionController = (DirectionController)target;
             directionController = new SerializedObject(_directionController);
