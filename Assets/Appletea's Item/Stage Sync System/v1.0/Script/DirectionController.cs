@@ -23,7 +23,7 @@ namespace AppleteaSystems.StageSyncSystem
             if (sender < 0)
                 return;
 
-            SSS_core.StartHandling(0);
+            SSS_core.StartHandling(sender);
         }
 
         int FindSender()
