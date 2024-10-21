@@ -62,8 +62,6 @@ namespace AppleteaSystems.StageSyncSystem
             set
             {
                 _playingObjectIndex = value;
-                TakeOwnership();
-                RequestSerialization();
             }
         }
         #endregion
@@ -125,8 +123,11 @@ namespace AppleteaSystems.StageSyncSystem
         //外部呼出し用
         public void StartHandling(int objectIndex)
         {
+            //起動させた人物がOwnerを取得
+            TakeOwnership();
             //再生中の曲設定を共有
             PlayingObjectIndex = objectIndex;
+            RequestSerialization();
 
             //動画再生開始
             Iwasync_core.TakeOwnership();
