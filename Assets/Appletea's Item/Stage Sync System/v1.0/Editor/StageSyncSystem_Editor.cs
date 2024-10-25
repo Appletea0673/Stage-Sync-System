@@ -71,7 +71,7 @@ namespace AppleteaSystems.StageSyncSystem
         private VideoCore GetIwasyncCore()
         {
             VideoCore[] coreTemp = FindObjectsByType<VideoCore>(FindObjectsSortMode.None);
-            if (coreTemp != null) return coreTemp[0];
+            if (coreTemp != null && coreTemp.Length > 0) return coreTemp[0];
             else return null;
         }
 
