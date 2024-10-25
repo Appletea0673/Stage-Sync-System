@@ -25,29 +25,29 @@
   本プログラムはiwaSyncの導入が前提です。
 
 ## 内容物
-本システムは以下のScript群で構成されます。
-Assets
-└Appletea's Item
- └Stage Sync System
-  └v1.0
-　   ├Editor
- 　  │ └StageSyncSystem_Editor.cs
- 　  ├Material
- 　  │ └Performer Space.mat
- 　  ├Script
-　   │ ├DirectionController.asset
- 　  │ ├DirectionController.cs
-　   │ ├DirectionObject.asset
-　   │ ├DirectionObject.cs
-　   │ ├DirectionSwitch.asset
-　   │ ├DirectionSwitch.cs
-　   │ ├PerformerChecker.asset
-　   │ ├PerformerChecker.cs
-　   │ ├SSSCore.asset
-　   │ └SSSCore.cs
-　   ├Stage Sync System.prefab
-　   └Texture
-　   　 └UI_Splite.png
+本システムは以下のScript群で構成されます。<br>
+Assets<br>
+└Appletea's Item<br>
+ └Stage Sync System<br>
+  └v1.0<br>
+　   ├Editor<br>
+ 　  │ └StageSyncSystem_Editor.cs<br>
+ 　  ├Material<br>
+ 　  │ └Performer Space.mat<br>
+ 　  ├Script<br>
+　   │ ├DirectionController.asset<br>
+ 　  │ ├DirectionController.cs<br>
+　   │ ├DirectionObject.asset<br>
+　   │ ├DirectionObject.cs<br>
+　   │ ├DirectionSwitch.asset<br>
+　   │ ├DirectionSwitch.cs<br>
+　   │ ├PerformerChecker.asset<br>
+　   │ ├PerformerChecker.cs<br>
+　   │ ├SSSCore.asset<br>
+　   │ └SSSCore.cs<br>
+　   ├Stage Sync System.prefab<br>
+　   └Texture<br>
+　   　 └UI_Splite.png<br>
 
 
 ## 使い方
@@ -57,23 +57,23 @@ Scene上に「Stage Sync System.prefab」を配置します。<br>
 Prefabは主に、<br>
 ①UI<br>
 ②Performer Space<br>
-で構成されます。
-![](Images/Prefab.png)
+で構成されます。<br>
+![](Images/Prefab.png)<br>
 UIは任意の位置に配置し、Performer Spaceは演者が移動する範囲に設置してください。設置後は付属のMesh RendererとMesh Filterコンポーネントを削除してください。
  - IwaSyncの連携確認<br>
- ![](Images/Direction Controller.png)
-「Stage Sync System.prefab」のRootから現在のシステムのステータスが確認できます。
+ ![](Images/Direction_Controller.png)<br>
+「Stage Sync System.prefab」のRootから現在のシステムのステータスが確認できます。<br>
 IwaSyncがScene上に存在しない、あるいは非表示になっている場合はIwaSyncをScene上に配置し、表示してください。
 すると表示が「Linked」に変化します。
  - 演出の設定<br>
  「演出」とは、現在Playerble Directorが付属するアクティブにした際に演出が流れるObjectのことを指します。(今後Animatiorが付属したものにも対応予定)<br>
- 演出を設定するにはまずScene上の演出オブジェクトにDirection ObjectのScriptをアタッチしてください。
- ![](Images/Direction Object.png)
+ 演出を設定するにはまずScene上の演出オブジェクトにDirection ObjectのScriptをアタッチしてください。<br>
+ ![](Images/Direction_Object.png)<br>
 Direction NameからUIに表示させる演出名とVideo URLから再生する動画のURLを設定します。
  - 演出の読み込み<br>
  演出の設定が終わったら演出を本システムに認識させます。<br>
-  ![](Images/Direction Controller_Attached.png)
-再度Stage Sync SystemのRootを選択して演出一覧に設定した演出がすべて表示されていることを確認します。(演出は非表示の場合でも認識されます。)
+  ![](Images/Direction_Controller_Attached.png)<br>
+再度Stage Sync SystemのRootを選択して演出一覧に設定した演出がすべて表示されていることを確認します。(演出は非表示の場合でも認識されます。)<br>
 以上の操作の後、ワールドをアップロードすればご利用いただけます。
 
 ## 利用規約
