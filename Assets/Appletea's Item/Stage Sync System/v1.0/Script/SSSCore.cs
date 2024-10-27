@@ -111,7 +111,7 @@ namespace AppleteaSystems.StageSyncSystem
             else
             {
                 //‰¹—Ê‚ðˆêŽž•Û‘¶
-                _volumeTemp = Iwasync_core.volume;
+                if (Iwasync_core.volume != 0.0f) _volumeTemp = Iwasync_core.volume;
 
                 foreach (DirectionObject _dir in _directions)
                 {
