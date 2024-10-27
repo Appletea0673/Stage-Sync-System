@@ -58,7 +58,7 @@ MonoBehaviour:
     PrefabModifications: []
     SerializationNodes: []
   _udonSharpBackingUdonBehaviour: {fileID: 4140954188308564269}
-  SSS_core: {fileID: 0}
+  SSS_core: {fileID: 513570742099433995}
   _directionSWs:
   - {fileID: 0}
   - {fileID: 0}
