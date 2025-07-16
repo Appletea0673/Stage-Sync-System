@@ -29,7 +29,7 @@ namespace AppleteaSystems.StageSyncSystem
 
         //Local Valiable
         bool _isPerformer = false;
-        [FieldChangeCallback(nameof(PlayingObjectIndex))]
+        [FieldChangeCallback(nameof(PlayingObjectIndex)), UdonSynced]
         int _playingObjectIndex;
         const uint _MODE_VIDEO = 0x00000010;
         float _volumeTemp = 0.0f;
@@ -68,7 +68,7 @@ namespace AppleteaSystems.StageSyncSystem
 
         void Start()
         {
-            //PlayerbleDirector‚Ì‰Šúİ’è
+            //PlayerbleDirectorã®åˆæœŸè¨­å®š
             foreach (DirectionObject _dir in _directions)
             {
                 DirectionSetting(_dir, false);
@@ -91,7 +91,7 @@ namespace AppleteaSystems.StageSyncSystem
             if(_directions == null) return;
             if (Iwasync_core.isPlaying)
             {
-                //“¯ŠúŠ®—¹Šm”F
+                //åŒæœŸå®Œäº†ç¢ºèª
                 bool _loadedFlag = isLoaded();
                 if (_loadedFlag)
                 {
@@ -101,7 +101,7 @@ namespace AppleteaSystems.StageSyncSystem
                 else
                 {
                     Iwasync_core.volume = 0.0f;
-                    //“¯ŠúƒYƒŒ‚ªû‘©‚·‚é‚Ü‚Å“¯Šú‚ğæ‚é
+                    //åŒæœŸã‚ºãƒ¬ãŒåæŸã™ã‚‹ã¾ã§åŒæœŸã‚’å–ã‚‹
                     //float offset = (float)Iwasync_core.GetProgramVariable("_time") + (Networking.GetServerTimeInMilliseconds() - Iwasync_core.clockTime) / 1000f * Iwasync_core.speed;
                     //float offsetLocal = Iwasync_core.offsetTime / 1000f;
                     //if (SyncAccuracy <= Mathf.Abs(Iwasync_core.time - offsetLocal - offset)) Iwasync_core.offsetTime = GetOffsetTime();
@@ -110,7 +110,7 @@ namespace AppleteaSystems.StageSyncSystem
             }
             else
             {
-                //‰¹—Ê‚ğˆê•Û‘¶
+                //éŸ³é‡ã‚’ä¸€æ™‚ä¿å­˜
                 if (Iwasync_core.volume != 0.0f) _volumeTemp = Iwasync_core.volume;
 
                 foreach (DirectionObject _dir in _directions)
@@ -120,21 +120,21 @@ namespace AppleteaSystems.StageSyncSystem
             }
         }
 
-        //ŠO•”ŒÄo‚µ—p
+        //å¤–éƒ¨å‘¼å‡ºã—ç”¨
         public void StartHandling(int objectIndex)
         {
-            //‹N“®‚³‚¹‚½l•¨‚ªOwner‚ğæ“¾
+            //èµ·å‹•ã•ã›ãŸäººç‰©ãŒOwnerã‚’å–å¾—
             TakeOwnership();
-            //Ä¶’†‚Ì‹Èİ’è‚ğ‹¤—L
+            //å†ç”Ÿä¸­ã®æ›²è¨­å®šã‚’å…±æœ‰
             PlayingObjectIndex = objectIndex;
             RequestSerialization();
 
-            //“®‰æÄ¶ŠJn
+            //å‹•ç”»å†ç”Ÿé–‹å§‹
             Iwasync_core.TakeOwnership();
             Iwasync_core.PlayURL(_MODE_VIDEO, _directions[_playingObjectIndex].videoURL);
             Iwasync_core.RequestSerialization();
 
-            //’x‰„ˆ—&‹­§“¯Šúˆ—
+            //é…å»¶å‡¦ç†&å¼·åˆ¶åŒæœŸå‡¦ç†
             //Iwasync_core.offsetTime = GetOffsetTime();
         }
 
