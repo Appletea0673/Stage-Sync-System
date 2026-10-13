@@ -10,11 +10,11 @@ namespace AppleteaSystems.StageSyncSystem
     public class DirectionObject : UdonSharpBehaviour
     {
         [SerializeField]
-        [Tooltip("‰‰o–¼")]
+        [Tooltip("æ¼”å‡ºå")]
         private string DirectionName = "Default";
 
         [SerializeField]
-        [Tooltip("‰‰o—p“®‰æURL")]
+        [Tooltip("æ¼”å‡ºç”¨å‹•ç”»URL")]
         private VRCUrl VideoURL;
 
         //Getter

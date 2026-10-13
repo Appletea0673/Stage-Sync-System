@@ -8,11 +8,11 @@ using System;
 
 namespace AppleteaSystems.StageSyncSystem
 {
-    //Script‚É‘Î‚·‚éCustomEditor‚Ìİ’è
+    // Scriptã«å¯¾ã™ã‚‹CustomEditorã®è¨­å®š
     [CustomEditor(typeof(DirectionController))]
     public class StageSyncSystem_Editor : Editor
     {
-        //SerializeObject‚ÅScript‚ÌInstance‚ğŠÇ—
+        // SerializeObjectã§Scriptã®Instanceã‚’ç®¡ç†
         SerializedObject SSS_Core;
         SerializedObject directionController;
 
@@ -32,12 +32,12 @@ namespace AppleteaSystems.StageSyncSystem
         {
             if (Application.isPlaying) return;
 
-            //•K—v‚Èƒf[ƒ^‰ñû
+            // å¿…è¦ãªãƒ‡ãƒ¼ã‚¿å›å
             _directionController = (DirectionController)target;
             directionController = new SerializedObject(_directionController);
             Thumbnail = AssetDatabase.LoadAssetAtPath<Texture2D>(AssetDatabase.GUIDToAssetPath("e53f95351d21c2041a16114955a6534b"));
 
-            //Core‚Ìæ“¾
+            // Coreã®å–å¾—
             _SSSCore = GetSSSCore();
             SSS_Core = new SerializedObject(_SSSCore);
 
@@ -45,11 +45,11 @@ namespace AppleteaSystems.StageSyncSystem
             if (_Iwasync_Core != null) SetIwasyncCore(_Iwasync_Core, SSS_Core);
             SetSSSCore(directionController, _SSSCore);
 
-            //‰‰o‚Ìæ“¾
+            // æ¼”å‡ºã®å–å¾—
             GetDirectionList(out _directionList);
             List<GameObject> directionSWList = new List<GameObject>();
-            //UIƒXƒCƒbƒ`‚Ö”½‰f
-            //SW‘Síœ
+            // UIã‚¹ã‚¤ãƒƒãƒã¸åæ˜ 
+            // SWå…¨å‰Šé™¤
             Transform DirectorSWRoot = _directionController.transform.Find(_directionSWRootPath);
             if (_directionList != null)
             {
@@ -67,7 +67,7 @@ namespace AppleteaSystems.StageSyncSystem
             
         }
 
-        //ŠeH’ö‚ğClass‚É‚Ü‚Æ‚ß‚Äˆ—‚µ‚½•û‚ª‚¢‚¢‚Æl‚¦‚ç‚ê‚éB
+        // å„å·¥ç¨‹ã‚’Classã«ã¾ã¨ã‚ã¦å‡¦ç†ã—ãŸæ–¹ãŒã„ã„ã¨è€ƒãˆã‚‰ã‚Œã‚‹ã€‚
         private VideoCore GetIwasyncCore()
         {
             VideoCore[] coreTemp = FindObjectsByType<VideoCore>(FindObjectsSortMode.None);
@@ -83,7 +83,7 @@ namespace AppleteaSystems.StageSyncSystem
 
         private void GetDirectionList(out DirectionObject[] directionList)
         {
-            //”ñƒAƒNƒeƒBƒu‚Ì‰‰o‚à’Tõ
+            // éã‚¢ã‚¯ãƒ†ã‚£ãƒ–ã®æ¼”å‡ºã‚‚æ¢ç´¢
             directionList = FindObjectsByType<DirectionObject>(FindObjectsInactive.Include, FindObjectsSortMode.None);
             Array.Sort(directionList, (x, y) => string.Compare(x.directionName, y.directionName));
         }
@@ -112,17 +112,17 @@ namespace AppleteaSystems.StageSyncSystem
             }
         }
 
-        //Œ³XInstantiate‚µ‚½Object‚ğ’¼ÚDirectionController‚É“n‚µ‚Ä‚¢‚½‚ªAPlay‚ÉŠe—v‘f‚ªnull‚É‚È‚é–â‘è‚ª”­¶‚µ‚½‚½‚ßg—p‚µ‚È‚¢•ûj
+        // å…ƒã€…Instantiateã—ãŸObjectã‚’ç›´æ¥DirectionControllerã«æ¸¡ã—ã¦ã„ãŸãŒã€Playæ™‚ã«å„è¦ç´ ãŒnullã«ãªã‚‹å•é¡ŒãŒç™ºç”Ÿã—ãŸãŸã‚ä½¿ç”¨ã—ãªã„æ–¹é‡
         private List<GameObject> GenerateDirectionSW(Transform DirectorSWRoot, string directionSW_BaseName, DirectionObject[] directionList)
         {
             List<GameObject> tempList = new List<GameObject>();
             GameObject directionSW_Base = DirectorSWRoot.Find(directionSW_BaseName).gameObject;
             for (int i = 0; i < directionList.Length; i++)
             {
-                //Prefab‚©‚ç¶¬‚µ‚È‚¢——R‚Æ‚µ‚ÄAButtonƒRƒ“ƒ|[ƒlƒ“ƒg‚Ìİ’è€–Ú‚ªPrefab‚É‚·‚é‚ÆÁ‚¦‚Ä‚µ‚Ü‚¤ˆ×
+                // Prefabã‹ã‚‰ç”Ÿæˆã—ãªã„ç†ç”±ã¨ã—ã¦ã€Buttonã‚³ãƒ³ãƒãƒ¼ãƒãƒ³ãƒˆã®è¨­å®šé …ç›®ãŒPrefabã«ã™ã‚‹ã¨æ¶ˆãˆã¦ã—ã¾ã†ç‚º
                 GameObject temp = Instantiate(directionSW_Base, DirectorSWRoot, false);
                 temp.SetActive(true);
-                //temp.name = i.ToString();
+                // temp.name = i.ToString();
                 Text Title = temp.transform.Find("Button/Text").GetComponent<Text>();
                 Title.text = directionList[i].GetComponent<DirectionObject>().directionName;
                 tempList.Add(temp);
@@ -131,7 +131,7 @@ namespace AppleteaSystems.StageSyncSystem
         }
 
 
-        //‚±‚±Generic‚Å‚Ü‚Æ‚ß‚ê‚»‚¤
+        // ã“ã“Genericã§ã¾ã¨ã‚ã‚Œãã†
         private void SettingDirection_Controller(SerializedObject directionController, in List<GameObject> directionSWList)
         {
             SerializedProperty DirectionSWs = directionController.FindProperty("_directionSWs");
@@ -144,7 +144,7 @@ namespace AppleteaSystems.StageSyncSystem
             }
             DirectionSWs.arraySize = directionSWList.Count;
 
-            // Še—v‘f‚ÉƒAƒNƒZƒX‚µ‚Ä’l‚ğİ’è
+            // å„è¦ç´ ã«ã‚¢ã‚¯ã‚»ã‚¹ã—ã¦å€¤ã‚’è¨­å®š
             for (int i = 0; i < directionSWList.Count; i++)
             {
                 SerializedProperty element = DirectionSWs.GetArrayElementAtIndex(i);
@@ -165,7 +165,7 @@ namespace AppleteaSystems.StageSyncSystem
             }
             Directions.arraySize = directionList.Length;
 
-            // Še—v‘f‚ÉƒAƒNƒZƒX‚µ‚Ä’l‚ğİ’è
+            // å„è¦ç´ ã«ã‚¢ã‚¯ã‚»ã‚¹ã—ã¦å€¤ã‚’è¨­å®š
             for (int i = 0; i < directionList.Length; i++)
             {
                 SerializedProperty element = Directions.GetArrayElementAtIndex(i);
@@ -176,7 +176,7 @@ namespace AppleteaSystems.StageSyncSystem
 
         public override void OnInspectorGUI()
         {
-            //ƒTƒ€ƒlƒCƒ‹
+            // ã‚µãƒ ãƒã‚¤ãƒ«
             if (Thumbnail != null) ImageOnGUI(Thumbnail);
 
             base.OnInspectorGUI();
@@ -187,13 +187,13 @@ namespace AppleteaSystems.StageSyncSystem
                 return;
             }
 
-            //Inspector‚É•\¦‚³‚ê‚é“à—e‚ğOverride
+            // Inspectorã«è¡¨ç¤ºã•ã‚Œã‚‹å†…å®¹ã‚’Override
             EditorGUILayout.BeginVertical(GUI.skin.box);
 
             EditorGUILayout.BeginVertical(GUI.skin.box);
 
             string Label;
-            if (Application.systemLanguage == SystemLanguage.Japanese) Label = "iwaSync˜AŒgó‹µ";
+            if (Application.systemLanguage == SystemLanguage.Japanese) Label = "iwaSyncé€£æºçŠ¶æ³";
             else Label = "iwaSync Integration Status";
 
             EditorGUILayout.LabelField(Label, EditorStyles.boldLabel);
@@ -219,7 +219,7 @@ namespace AppleteaSystems.StageSyncSystem
             EditorGUILayout.Space();
             EditorGUILayout.BeginVertical(GUI.skin.box);
 
-            if (Application.systemLanguage == SystemLanguage.Japanese) Label = "‰‰oˆê——";
+            if (Application.systemLanguage == SystemLanguage.Japanese) Label = "æ¼”å‡ºä¸€è¦§";
             else Label = "Direction List";
 
             isFoldout = EditorGUILayout.Foldout(isFoldout, Label);
@@ -241,7 +241,7 @@ namespace AppleteaSystems.StageSyncSystem
         {
             int _margin = 40;
 
-            // ‰æ‘œ‚ÌƒAƒXƒyƒNƒg”ä‚ğˆÛ‚·‚é‚½‚ß‚Ì‚‚³‚ğŒvZ
+            // ç”»åƒã®ã‚¢ã‚¹ãƒšã‚¯ãƒˆæ¯”ã‚’ç¶­æŒã™ã‚‹ãŸã‚ã®é«˜ã•ã‚’è¨ˆç®—
             float aspectRatio = (float)Thumbnail.height / Thumbnail.width;
             float inspectorWidth = EditorGUIUtility.currentViewWidth - _margin;
             float imageHeight = inspectorWidth * aspectRatio;
