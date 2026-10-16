@@ -1,5 +1,6 @@
 using UdonSharp;
 using UnityEngine;
+using VRC.SDK3.Components.Video;
 using VRC.SDKBase;
 using Yamadev.YamaStream;
 
@@ -42,32 +43,48 @@ namespace AppleteaSystems.StageSyncSystem
 
         public override void OnVideoReady()
         {
-            if (_sssCore != null) _sssCore.SendCustomEvent("OnVideoReady");
+            if (_sssCore != null) _sssCore.OnVideoReady();
         }
 
         public override void OnVideoStart()
         {
-            if (_sssCore != null) _sssCore.SendCustomEvent("OnVideoStart");
+            if (_sssCore != null) _sssCore.OnVideoStart();
         }
 
         public override void OnVideoEnd()
         {
-            if (_sssCore != null) _sssCore.SendCustomEvent("OnVideoEnd");
+            if (_sssCore != null) _sssCore.OnVideoEnd();
+        }
+
+        public override void OnVideoLoop()
+        {
+            if (_sssCore != null) _sssCore.OnVideoLoop();
+        }
+
+        public override void OnVideoError(VideoError videoError)
+        {
+            if (_sssCore != null) _sssCore.OnVideoError(videoError);
         }
 
         public override void OnVideoPlay()
         {
-            if (_sssCore != null) _sssCore.SendCustomEvent("OnVideoPlay");
+            if (_sssCore != null) _sssCore.OnVideoPlay();
         }
 
         public override void OnVideoPause()
         {
-            if (_sssCore != null) _sssCore.SendCustomEvent("OnVideoPause");
+            if (_sssCore != null) _sssCore.OnVideoPause();
         }
 
         public override void OnVideoStop()
         {
-            if (_sssCore != null) _sssCore.SendCustomEvent("OnVideoStop");
+            if (_sssCore != null) _sssCore.OnVideoStop();
+        }
+
+        public override void OnSetTime(float time)
+        {
+            if (_sssCore != null) _sssCore.OnVideoSetTime(time);
         }
     }
 }
+

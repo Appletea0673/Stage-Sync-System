@@ -1417,7 +1417,7 @@ MonoBehaviour:
   _udonSharpBackingUdonBehaviour: {fileID: 7734693092273633204}
   Iwasync_core: {fileID: 0}
   AudienceDelays: 600
-  VideoOffset: 10000
+  VideoOffset: 0
   _directions:
   - {fileID: 0}
   - {fileID: 0}
