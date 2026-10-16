@@ -1,5 +1,6 @@
 using UnityEngine;
 using VRC.SDKBase;
+using Yamadev.YamaStream;
 using HoshinoLabs.IwaSync3.Udon;
 using UdonSharp;
 
@@ -9,10 +10,22 @@ namespace AppleteaSystems.StageSyncSystem
     [UdonBehaviourSyncMode(BehaviourSyncMode.Manual)]
     public class SSSCore : UdonSharpBehaviour
     {
-        [Header("Main")]
+        [Header("Video Player Core")]
         [SerializeField]
+        [Tooltip("YamaPlayer")]
+        Controller YamaPlayer_controller;
+
+        [SerializeField]
+        [Tooltip("IwaSync3")]
         VideoCore Iwasync_core;
 
+        [Header("General Settings")]
+        [SerializeField]
+        DirectionObject[] _directions;
+        [SerializeField]
+        VideoPlayerType _videoPlayerType = VideoPlayerType.YamaPlayer;
+
+        [Header("Manual Parameters")]
         [SerializeField]
         [Tooltip("Milliseconds")]
         int AudienceDelays = 600;
@@ -22,10 +35,7 @@ namespace AppleteaSystems.StageSyncSystem
         int VideoOffset = 10000;
 
         [SerializeField]
-        DirectionObject[] _directions;
-
-        [SerializeField]
-        private float SyncAccuracy = 0.1f;
+        float SyncAccuracy = 0.1f;
 
         // Local Valiable
         bool _isPerformer = false;
@@ -41,6 +51,11 @@ namespace AppleteaSystems.StageSyncSystem
             set { _directions = value; }
         }
 
+        public Controller YamaPlayerController
+        {
+            set { YamaPlayer_controller = value; }
+        }
+
         public VideoCore IwasyncCore
         {
             set { Iwasync_core = value; }
@@ -54,6 +69,7 @@ namespace AppleteaSystems.StageSyncSystem
                 _isPerformer = value;
                 Iwasync_core.offsetTime = GetOffsetTime();
             }
+
         }
 
         public int PlayingObjectIndex
@@ -65,6 +81,12 @@ namespace AppleteaSystems.StageSyncSystem
             }
         }
         #endregion
+
+        enum VideoPlayerType
+        {
+            YamaPlayer,
+            IwaSync
+        }
 
         void Start()
         {
@@ -110,13 +132,6 @@ namespace AppleteaSystems.StageSyncSystem
             }
             else
             {
-                //音量を一時保存
-                if (Iwasync_core.volume != 0.0f) _volumeTemp = Iwasync_core.volume;
-
-                foreach (DirectionObject _dir in _directions)
-                {
-                    DirectionSetting(_dir, false);
-                }
             }
         }
 
@@ -138,13 +153,36 @@ namespace AppleteaSystems.StageSyncSystem
             //Iwasync_core.offsetTime = GetOffsetTime();
         }
 
+        public void OnVideoReady()
+        {
+            
+        }
+
+        public void OnVideoStop()
+        {
+            //音量を一時保存
+            if (Iwasync_core.volume != 0.0f) _volumeTemp = Iwasync_core.volume;
+            Iwasync_core.volume = 0.0f;
+            foreach (DirectionObject _dir in _directions)
+            {
+                DirectionSetting(_dir, false);
+            }
+        }
+        
+        #region Independent Private Methods
+
+        private void TakeOwnership()
+        {
+            if (!Networking.IsOwner(Networking.LocalPlayer, gameObject)) Networking.SetOwner(Networking.LocalPlayer, gameObject);
+        }
+
         private void DirectionSetting(DirectionObject _do, bool _toggle)
         {
             if (_toggle)
             {
                 _do.playableDirector.Play();
                 _do.gameObject.SetActive(true);
-                _do.playableDirector.time = Iwasync_core.time;
+                _do.playableDirector.time = GetCurrentVideoTime();
             }
             else
             {
@@ -154,19 +192,54 @@ namespace AppleteaSystems.StageSyncSystem
             }
         }
 
+        #endregion
+
+        #region Dependent Private Methods
+
         private int GetOffsetTime()
         {
-            return -VideoOffset + (_isPerformer ? AudienceDelays : 0);
+            if (YamaPlayer_controller != null && _videoPlayerType == VideoPlayerType.YamaPlayer)
+            {
+                return -VideoOffset + (_isPerformer ? AudienceDelays : 0);
+            }
+
+            else return -VideoOffset + (_isPerformer ? AudienceDelays : 0);
         }
 
-        private bool isLoaded()
+        private void ApplyOffset()
         {
-            return Iwasync_core.clockTime - GetOffsetTime() < Networking.GetServerTimeInMilliseconds();
+            int offsetMs = GetOffsetTime();
+
+            // YamaStream の場合 (秒に変換して代入)
+            if (YamaPlayer_controller != null && _videoPlayerType == VideoPlayerType.YamaPlayer)
+            {
+                YamaPlayer_controller.LocalDelay = offsetMs / 1000f;
+            }
+
+            // IwaSync3 の場合 (ミリ秒で代入)
+            if (Iwasync_core != null && _videoPlayerType == VideoPlayerType.IwaSync)
+            {
+                Iwasync_core.offsetTime = offsetMs;
+            }
         }
-        
-        private void TakeOwnership()
+
+        private float GetCurrentVideoTime()
         {
-            if (!Networking.IsOwner(Networking.LocalPlayer, gameObject)) Networking.SetOwner(Networking.LocalPlayer, gameObject);
+            // YamaStream が有効かつ再生中の場合
+            if (YamaPlayer_controller != null && YamaPlayer_controller.IsPlaying)
+            {
+                return YamaPlayer_controller.VideoTime;
+            }
+
+            // IwaSync3 が有効かつ再生中の場合
+            else if (Iwasync_core != null && Iwasync_core.isPlaying)
+            {
+                return Iwasync_core.time;
+            }
+
+            else return 0f;
         }
+
+        #endregion
     }
 }
