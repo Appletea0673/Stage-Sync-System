@@ -27,7 +27,7 @@ namespace AppleteaSystems.StageSyncSystem
         [SerializeField]
         private float SyncAccuracy = 0.1f;
 
-        //Local Valiable
+        // Local Valiable
         bool _isPerformer = false;
         [FieldChangeCallback(nameof(PlayingObjectIndex)), UdonSynced]
         int _playingObjectIndex;
