@@ -49,10 +49,6 @@ namespace AppleteaSystems.StageSyncSystem
         int AudienceDelays = 600;
 
         [SerializeField]
-        [Tooltip("Milliseconds (Manual fine-tuning offset)")]
-        int VideoOffset = 0;
-
-        [SerializeField]
         [Tooltip("Timeline sync drift threshold in seconds")]
         float SyncAccuracy = 0.1f;
 
@@ -1015,16 +1011,11 @@ namespace AppleteaSystems.StageSyncSystem
         // 観客: -NetworkDelay
         private float GetOffsetSeconds()
         {
-            float roleDelaySeconds;
             if (_isPerformer)
             {
-                roleDelaySeconds = (_networkDelay > 0f) ? _networkDelay : (AudienceDelays / 1000f);
+                return (_networkDelay > 0f) ? _networkDelay : (AudienceDelays / 1000f);
             }
-            else
-            {
-                roleDelaySeconds = -_networkDelay;
-            }
-            return -(VideoOffset / 1000f) + roleDelaySeconds;
+            return -_networkDelay;
         }
 
         // ミリ秒単位のオフセット計算
