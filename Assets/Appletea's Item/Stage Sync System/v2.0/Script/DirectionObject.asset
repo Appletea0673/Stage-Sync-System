@@ -98,7 +98,7 @@ MonoBehaviour:
       Data: 6|UnityEngine.TooltipAttribute, UnityEngine.CoreModule
     - Name: tooltip
       Entry: 1
-      Data: "\uFFFD\uFFFD\uFFFDo\uFFFD\uFFFD"
+      Data: "\u6F14\u51FA\u540D"
     - Name: 
       Entry: 8
       Data: 
@@ -167,7 +167,7 @@ MonoBehaviour:
       Data: 11|UnityEngine.TooltipAttribute, UnityEngine.CoreModule
     - Name: tooltip
       Entry: 1
-      Data: "\uFFFD\uFFFD\uFFFDo\uFFFDp\uFFFD\uFFFD\uFFFD\uFFFDURL"
+      Data: "\u6F14\u51FA\u7528\u52D5\u753BURL"
     - Name: 
       Entry: 8
       Data: 
