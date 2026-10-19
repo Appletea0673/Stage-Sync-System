@@ -1,13 +1,13 @@
 {
 	"folders": [
 		{
-			"path": "Assets/Appletea's Item/Stage Sync System/v1.0/Script"
-		},
-		{
 			"path": "."
 		},
 		{
-			"path": "Assets/Appletea's Item/Stage Sync System/v1.0/Editor"
+			"path": "Assets/Appletea's Item/Stage Sync System/v2.0/Script"
+		},
+		{
+			"path": "Assets/Appletea's Item/Stage Sync System/v2.0/Editor"
 		}
 	]
 }
