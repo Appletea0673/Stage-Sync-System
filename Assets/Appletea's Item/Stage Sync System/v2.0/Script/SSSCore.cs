@@ -146,6 +146,10 @@ namespace AppleteaSystems.StageSyncSystem
                 _isPerformer = value;
                 ApplyOffset();
                 SyncLocalPerformerState();
+                if (_isStagePlaying && !_isWaitingForReady && IsVideoPlayerPlaying())
+                {
+                    SyncActiveDirection(true);
+                }
             }
         }
 
@@ -267,6 +271,15 @@ namespace AppleteaSystems.StageSyncSystem
                 if (_playingObjectIndex < 0 || _playingObjectIndex >= _directions.Length) return;
                 DirectionObject currentDir = _directions[_playingObjectIndex];
                 if (currentDir == null) return;
+
+                if (!ShouldPlayDirection(currentDir))
+                {
+                    if (currentDir.gameObject.activeSelf || _activeDirectionIndex != -1)
+                    {
+                        SyncActiveDirection(false);
+                    }
+                    return;
+                }
 
                 if (_activeDirectionIndex != _playingObjectIndex || !currentDir.gameObject.activeSelf)
                 {
@@ -990,18 +1003,27 @@ namespace AppleteaSystems.StageSyncSystem
             }
         }
 
+        private bool ShouldPlayDirection(DirectionObject dirObj)
+        {
+            if (dirObj == null) return false;
+            if (_isPerformer && !dirObj.playForPerformer) return false;
+            return true;
+        }
+
         private void SyncActiveDirection(bool play)
         {
             if (_directions == null) return;
 
+            bool anyActivated = false;
             for (int i = 0; i < _directions.Length; i++)
             {
                 if (_directions[i] == null) continue;
-                bool shouldBeActive = play && (i == _playingObjectIndex);
+                bool shouldBeActive = play && (i == _playingObjectIndex) && ShouldPlayDirection(_directions[i]);
                 if (shouldBeActive)
                 {
                     DirectionSetting(_directions[i], true);
                     _activeDirectionIndex = i;
+                    anyActivated = true;
                 }
                 else if (_directions[i].gameObject.activeSelf)
                 {
@@ -1009,7 +1031,7 @@ namespace AppleteaSystems.StageSyncSystem
                 }
             }
 
-            if (!play)
+            if (!anyActivated)
             {
                 _activeDirectionIndex = -1;
             }

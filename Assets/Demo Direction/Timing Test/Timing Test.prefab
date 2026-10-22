@@ -19549,6 +19549,7 @@ MonoBehaviour:
   DirectionName: Timing Test
   VideoURL:
     url: https://www.youtube.com/watch?v=48kNyyAR3qM
+  PlayForPerformer: 1
 --- !u!114 &4762598385004263866
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -19568,7 +19569,7 @@ MonoBehaviour:
   SynchronizePosition: 0
   AllowCollisionOwnershipTransfer: 0
   Reliable: 0
-  _syncMethod: 0
+  _syncMethod: 1
   serializedProgramAsset: {fileID: 11400000, guid: e018d15ad3f102b4c9a11d8d13b42919,
     type: 2}
   programSource: {fileID: 11400000, guid: 2f8c15fa4facf9b4486053156b71f48c, type: 2}
