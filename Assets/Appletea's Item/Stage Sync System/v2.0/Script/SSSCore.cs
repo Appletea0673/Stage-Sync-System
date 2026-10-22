@@ -301,55 +301,6 @@ namespace AppleteaSystems.StageSyncSystem
             }
         }
 
-        void Update()
-        {
-            if (_directions == null || _directions.Length == 0) return;
-
-            if (_isWaitingForReady)
-            {
-                if (IsVideoPlayerPlaying() && !IsVideoPlayerPaused())
-                {
-                    PauseLocalVideoPlayerAtZero();
-                }
-
-                if (Networking.IsOwner(gameObject) && Time.time - _loadingStartTime >= ReadyTimeout)
-                {
-                    EvaluatePlayersLoadState(true);
-                }
-                return;
-            }
-
-            if (_isStagePlaying && IsVideoPlayerPlaying())
-            {
-                if (_playingObjectIndex < 0 || _playingObjectIndex >= _directions.Length) return;
-                DirectionObject currentDir = _directions[_playingObjectIndex];
-                if (currentDir == null) return;
-
-                if (!ShouldPlayDirection(currentDir))
-                {
-                    if (currentDir.gameObject.activeSelf || _activeDirectionIndex != -1)
-                    {
-                        SyncActiveDirection(false);
-                    }
-                    return;
-                }
-
-                if (_activeDirectionIndex != _playingObjectIndex || !currentDir.gameObject.activeSelf)
-                {
-                    SyncActiveDirection(true);
-                }
-                else if (!IsVideoPlayerPaused())
-                {
-                    float videoTime = GetCurrentVideoTime();
-                    float timelineTime = (float)currentDir.playableDirector.time;
-                    if (Mathf.Abs(timelineTime - videoTime) >= SyncAccuracy)
-                    {
-                        currentDir.playableDirector.time = videoTime;
-                    }
-                }
-            }
-        }
-
         #region External Control & Video Lifecycle
 
         // 外部呼出し用
@@ -407,6 +358,7 @@ namespace AppleteaSystems.StageSyncSystem
 
             if (_isStagePlaying)
             {
+                _localStartedSessionId = _playbackSessionId;
                 RestoreVideoPlayerVolume();
                 ApplyOffset();
                 SyncActiveDirection(true);
@@ -425,10 +377,21 @@ namespace AppleteaSystems.StageSyncSystem
             if (_isStagePlaying && _playingObjectIndex >= 0 && _playingObjectIndex < _directions.Length)
             {
                 DirectionObject currentDir = _directions[_playingObjectIndex];
-                if (currentDir != null && currentDir.gameObject.activeSelf)
+                if (currentDir != null)
                 {
-                    currentDir.playableDirector.time = GetCurrentVideoTime();
-                    currentDir.playableDirector.Play();
+                    if (!ShouldPlayDirection(currentDir))
+                    {
+                        SyncActiveDirection(false);
+                    }
+                    else if (!currentDir.gameObject.activeSelf || _activeDirectionIndex != _playingObjectIndex)
+                    {
+                        SyncActiveDirection(true);
+                    }
+                    else
+                    {
+                        currentDir.playableDirector.time = GetCurrentVideoTime();
+                        currentDir.playableDirector.Play();
+                    }
                 }
                 SendCustomEventDelayedSeconds(nameof(DelayedForceSync), 1.0f);
             }
@@ -873,6 +836,7 @@ namespace AppleteaSystems.StageSyncSystem
             {
                 YamaPlayer_controller.ForceSync();
             }
+            SyncActiveTimelineTime();
         }
 
         #endregion
@@ -1065,6 +1029,7 @@ namespace AppleteaSystems.StageSyncSystem
                     if (Mathf.Abs(_networkDelay - prevDelay) > 0.001f)
                     {
                         ApplyOffset();
+                        SyncActiveTimelineTime();
                     }
                 }
             }
@@ -1223,6 +1188,22 @@ namespace AppleteaSystems.StageSyncSystem
             if (!anyActivated)
             {
                 _activeDirectionIndex = -1;
+            }
+        }
+
+        private void SyncActiveTimelineTime()
+        {
+            if (!_isStagePlaying || _isWaitingForReady || !IsVideoPlayerPlaying() || IsVideoPlayerPaused()) return;
+            if (_directions == null || _playingObjectIndex < 0 || _playingObjectIndex >= _directions.Length) return;
+
+            DirectionObject currentDir = _directions[_playingObjectIndex];
+            if (currentDir == null || !currentDir.gameObject.activeSelf) return;
+
+            float videoTime = GetCurrentVideoTime();
+            float timelineTime = (float)currentDir.playableDirector.time;
+            if (Mathf.Abs(timelineTime - videoTime) >= SyncAccuracy)
+            {
+                currentDir.playableDirector.time = videoTime;
             }
         }
 
