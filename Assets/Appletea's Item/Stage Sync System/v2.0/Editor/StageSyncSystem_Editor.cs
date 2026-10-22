@@ -6,6 +6,7 @@ using UdonSharpEditor;
 using UnityEditor;
 using UnityEditor.Build;
 using UnityEditor.Build.Reporting;
+using UnityEditorInternal;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 using UnityEngine.UI;
@@ -28,13 +29,16 @@ namespace AppleteaSystems.StageSyncSystem
 
         Controller _YamaPlayer_Controller = null;
         VideoCore _Iwasync_Core = null;
-        DirectionObject[] _directionList;
+        List<DirectionObject> _directionList = new List<DirectionObject>();
+        ReorderableList _reorderableList;
 
         const string _directionSWRootPath = "UI/Canvas/Panel/Scroll View/Scroll View/Viewport/Content";
         const string _directionSW_BaseName = "DirectionSW";
         const string _bridgeObjectName = "Bridge";
 
-        bool isFoldout;
+        bool isFoldout = true;
+        int _pendingMoveFrom = -1;
+        int _pendingMoveTo = -1;
 
         private void OnEnable()
         {
@@ -64,17 +68,72 @@ namespace AppleteaSystems.StageSyncSystem
             {
                 SetupBridges(_SSSCore, _YamaPlayer_Controller, _Iwasync_Core, SSS_Core);
 
-                GetDirectionList(out _directionList);
-                List<GameObject> directionSWList = new List<GameObject>();
-                Transform DirectorSWRoot = _directionController.transform.Find(_directionSWRootPath);
-                if (_directionList != null && DirectorSWRoot != null)
-                {
-                    DeleteDirectionSW(DirectorSWRoot, _directionSW_BaseName);
-                    directionSWList = GenerateDirectionSW(DirectorSWRoot, _directionSW_BaseName, _directionList);
-                }
-                SettingDirection_Controller(directionController, directionSWList);
-                SettingDirection_Core(SSS_Core, _directionList);
+                GetSyncedDirectionList(SSS_Core, out _directionList);
+                ApplyDirectionOrder(_directionController, directionController, _SSSCore, SSS_Core, _directionList);
+                SetupReorderableList();
             }
+        }
+
+        private void SetupReorderableList()
+        {
+            _reorderableList = new ReorderableList(_directionList, typeof(DirectionObject), true, false, false, false)
+            {
+                headerHeight = 2f,
+                footerHeight = 0f,
+                elementHeight = EditorGUIUtility.singleLineHeight + 6f
+            };
+
+            _reorderableList.drawElementCallback = (Rect rect, int index, bool isActive, bool isFocused) =>
+            {
+                if (index < 0 || index >= _directionList.Count) return;
+                DirectionObject item = _directionList[index];
+                if (item == null) return;
+
+                rect.y += 3f;
+                rect.height = EditorGUIUtility.singleLineHeight;
+
+                const float buttonWidth = 24f;
+                const float spacing = 4f;
+                const float objFieldWidth = 115f;
+
+                float rightButtonsTotal = (buttonWidth * 2f) + spacing;
+                float availableWidth = rect.width - rightButtonsTotal - objFieldWidth - (spacing * 2f);
+
+                Rect labelRect = new Rect(rect.x, rect.y, Mathf.Max(60f, availableWidth), rect.height);
+                Rect objRect = new Rect(labelRect.xMax + spacing, rect.y, objFieldWidth, rect.height);
+                Rect upBtnRect = new Rect(objRect.xMax + spacing, rect.y, buttonWidth, rect.height);
+                Rect downBtnRect = new Rect(upBtnRect.xMax + spacing, rect.y, buttonWidth, rect.height);
+
+                EditorGUI.LabelField(labelRect, $"{index + 1}. {item.directionName}", EditorStyles.boldLabel);
+
+                using (new EditorGUI.DisabledScope(true))
+                {
+                    EditorGUI.ObjectField(objRect, item.gameObject, typeof(GameObject), true);
+                }
+
+                using (new EditorGUI.DisabledScope(index <= 0))
+                {
+                    if (GUI.Button(upBtnRect, "▲"))
+                    {
+                        _pendingMoveFrom = index;
+                        _pendingMoveTo = index - 1;
+                    }
+                }
+
+                using (new EditorGUI.DisabledScope(index >= _directionList.Count - 1))
+                {
+                    if (GUI.Button(downBtnRect, "▼"))
+                    {
+                        _pendingMoveFrom = index;
+                        _pendingMoveTo = index + 1;
+                    }
+                }
+            };
+
+            _reorderableList.onReorderCallback = (ReorderableList list) =>
+            {
+                ApplyDirectionOrder(_directionController, directionController, _SSSCore, SSS_Core, _directionList);
+            };
         }
 
         internal static Controller GetYamaPlayerController()
@@ -103,11 +162,150 @@ namespace AppleteaSystems.StageSyncSystem
             return null;
         }
 
-        internal static void GetDirectionList(out DirectionObject[] directionList)
+        /// <summary>
+        /// SSSCore._directions に保存されている既存の並び順を保持しつつ、
+        /// シーン上に新規追加された DirectionObject を末尾へ追加し、削除されたものを除外したリストを取得する。
+        /// </summary>
+        internal static void GetSyncedDirectionList(SerializedObject sssCoreSO, out List<DirectionObject> directionList)
         {
-            // 非アクティブの演出も探索
-            directionList = FindObjectsByType<DirectionObject>(FindObjectsInactive.Include, FindObjectsSortMode.None);
-            Array.Sort(directionList, (x, y) => string.Compare(x.directionName, y.directionName, StringComparison.Ordinal));
+            directionList = new List<DirectionObject>();
+
+            DirectionObject[] foundObjects = FindObjectsByType<DirectionObject>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            HashSet<DirectionObject> foundSet = new HashSet<DirectionObject>(foundObjects);
+            HashSet<DirectionObject> addedSet = new HashSet<DirectionObject>();
+
+            // 1. 既存の保存順序を優先して引き継ぐ
+            if (sssCoreSO != null)
+            {
+                sssCoreSO.Update();
+                SerializedProperty dirProp = sssCoreSO.FindProperty("_directions");
+                if (dirProp != null)
+                {
+                    for (int i = 0; i < dirProp.arraySize; i++)
+                    {
+                        DirectionObject existing = dirProp.GetArrayElementAtIndex(i).objectReferenceValue as DirectionObject;
+                        if (existing != null && foundSet.Contains(existing) && !addedSet.Contains(existing))
+                        {
+                            directionList.Add(existing);
+                            addedSet.Add(existing);
+                        }
+                    }
+                }
+            }
+
+            // 2. 新規追加された DirectionObject を収集（初回や複数同時追加時はHierarchy順で末尾に追加）
+            List<DirectionObject> newObjects = new List<DirectionObject>();
+            for (int i = 0; i < foundObjects.Length; i++)
+            {
+                DirectionObject candidate = foundObjects[i];
+                if (candidate != null && !addedSet.Contains(candidate))
+                {
+                    newObjects.Add(candidate);
+                    addedSet.Add(candidate);
+                }
+            }
+
+            if (newObjects.Count > 0)
+            {
+                newObjects.Sort(CompareByHierarchyOrder);
+                directionList.AddRange(newObjects);
+            }
+        }
+
+        internal static int CompareByDirectionNameAsc(DirectionObject x, DirectionObject y)
+        {
+            if (ReferenceEquals(x, y)) return 0;
+            if (x == null) return 1;
+            if (y == null) return -1;
+            int cmp = string.Compare(x.directionName, y.directionName, StringComparison.Ordinal);
+            return cmp != 0 ? cmp : CompareByHierarchyOrder(x, y);
+        }
+
+        internal static int CompareByDirectionNameDesc(DirectionObject x, DirectionObject y)
+        {
+            return -CompareByDirectionNameAsc(x, y);
+        }
+
+        internal static int CompareByGameObjectNameAsc(DirectionObject x, DirectionObject y)
+        {
+            if (ReferenceEquals(x, y)) return 0;
+            if (x == null) return 1;
+            if (y == null) return -1;
+            int cmp = string.Compare(x.gameObject.name, y.gameObject.name, StringComparison.Ordinal);
+            return cmp != 0 ? cmp : CompareByHierarchyOrder(x, y);
+        }
+
+        internal static int CompareByGameObjectNameDesc(DirectionObject x, DirectionObject y)
+        {
+            return -CompareByGameObjectNameAsc(x, y);
+        }
+
+        internal static int CompareByHierarchyOrder(DirectionObject x, DirectionObject y)
+        {
+            if (ReferenceEquals(x, y)) return 0;
+            if (x == null) return 1;
+            if (y == null) return -1;
+            return CompareTransformHierarchy(x.transform, y.transform);
+        }
+
+        private static int CompareTransformHierarchy(Transform a, Transform b)
+        {
+            if (ReferenceEquals(a, b)) return 0;
+            if (a == null) return 1;
+            if (b == null) return -1;
+
+            List<Transform> pathA = GetTransformPath(a);
+            List<Transform> pathB = GetTransformPath(b);
+
+            int minDepth = Mathf.Min(pathA.Count, pathB.Count);
+            for (int i = 0; i < minDepth; i++)
+            {
+                if (pathA[i] != pathB[i])
+                {
+                    return pathA[i].GetSiblingIndex().CompareTo(pathB[i].GetSiblingIndex());
+                }
+            }
+
+            return pathA.Count.CompareTo(pathB.Count);
+        }
+
+        private static List<Transform> GetTransformPath(Transform t)
+        {
+            List<Transform> path = new List<Transform>();
+            Transform current = t;
+            while (current != null)
+            {
+                path.Add(current);
+                current = current.parent;
+            }
+            path.Reverse();
+            return path;
+        }
+
+        internal static void ApplyDirectionOrder(
+            DirectionController dirController,
+            SerializedObject dirControllerSO,
+            SSSCore sssCore,
+            SerializedObject sssCoreSO,
+            List<DirectionObject> directionList)
+        {
+            if (dirController == null || sssCore == null || directionList == null) return;
+
+            List<GameObject> directionSWList = new List<GameObject>();
+            Transform directorSWRoot = dirController.transform.Find(_directionSWRootPath);
+            if (directorSWRoot != null)
+            {
+                DeleteDirectionSW(directorSWRoot, _directionSW_BaseName);
+                directionSWList = GenerateDirectionSW(directorSWRoot, _directionSW_BaseName, directionList);
+            }
+
+            SettingDirection_Controller(dirControllerSO, directionSWList);
+            SettingDirection_Core(sssCoreSO, directionList);
+
+            UdonSharpEditorUtility.CopyProxyToUdon(dirController);
+            UdonSharpEditorUtility.CopyProxyToUdon(sssCore);
+            EditorUtility.SetDirty(dirController);
+            EditorUtility.SetDirty(sssCore);
         }
 
         internal static void SetVideoPlayers(Controller yamaController, VideoCore iwasyncCore, SerializedObject sssCoreSO)
@@ -202,7 +400,7 @@ namespace AppleteaSystems.StageSyncSystem
             dirControllerSO.ApplyModifiedProperties();
         }
 
-        private void DeleteDirectionSW(Transform DirectorSWRoot, string directionSW_BaseName)
+        internal static void DeleteDirectionSW(Transform DirectorSWRoot, string directionSW_BaseName)
         {
             if (DirectorSWRoot == null) return;
             for (int i = DirectorSWRoot.childCount - 1; 0 <= i; i--)
@@ -214,27 +412,29 @@ namespace AppleteaSystems.StageSyncSystem
             }
         }
 
-        private List<GameObject> GenerateDirectionSW(Transform DirectorSWRoot, string directionSW_BaseName, DirectionObject[] directionList)
+        internal static List<GameObject> GenerateDirectionSW(Transform DirectorSWRoot, string directionSW_BaseName, List<DirectionObject> directionList)
         {
             List<GameObject> tempList = new List<GameObject>();
             Transform baseTransform = DirectorSWRoot.Find(directionSW_BaseName);
-            if (baseTransform == null) return tempList;
+            if (baseTransform == null || directionList == null) return tempList;
 
             GameObject directionSW_Base = baseTransform.gameObject;
-            for (int i = 0; i < directionList.Length; i++)
+            for (int i = 0; i < directionList.Count; i++)
             {
+                if (directionList[i] == null) continue;
                 // Prefabから生成しない理由として、Buttonコンポーネントの設定項目がPrefabにすると消えてしまう為
                 GameObject temp = Instantiate(directionSW_Base, DirectorSWRoot, false);
                 temp.SetActive(true);
                 Text Title = temp.transform.Find("Button/Text").GetComponent<Text>();
-                Title.text = directionList[i].GetComponent<DirectionObject>().directionName;
+                Title.text = directionList[i].directionName;
                 tempList.Add(temp);
             }
             return tempList;
         }
 
-        private void SettingDirection_Controller(SerializedObject dirControllerSO, in List<GameObject> directionSWList)
+        internal static void SettingDirection_Controller(SerializedObject dirControllerSO, in List<GameObject> directionSWList)
         {
+            if (dirControllerSO == null) return;
             dirControllerSO.Update();
             SerializedProperty DirectionSWs = dirControllerSO.FindProperty("_directionSWs");
 
@@ -254,8 +454,9 @@ namespace AppleteaSystems.StageSyncSystem
             dirControllerSO.ApplyModifiedProperties();
         }
 
-        private void SettingDirection_Core(SerializedObject Core, in DirectionObject[] directionList)
+        internal static void SettingDirection_Core(SerializedObject Core, in List<DirectionObject> directionList)
         {
+            if (Core == null) return;
             Core.Update();
             SerializedProperty Directions = Core.FindProperty("_directions");
 
@@ -265,14 +466,21 @@ namespace AppleteaSystems.StageSyncSystem
                 Core.ApplyModifiedProperties();
                 return;
             }
-            Directions.arraySize = directionList.Length;
+            Directions.arraySize = directionList.Count;
 
-            for (int i = 0; i < directionList.Length; i++)
+            for (int i = 0; i < directionList.Count; i++)
             {
                 SerializedProperty element = Directions.GetArrayElementAtIndex(i);
                 element.objectReferenceValue = directionList[i];
             }
             Core.ApplyModifiedProperties();
+        }
+
+        private void SortDirections(Comparison<DirectionObject> comparison)
+        {
+            if (_directionList == null || _directionList.Count <= 1) return;
+            _directionList.Sort(comparison);
+            ApplyDirectionOrder(_directionController, directionController, _SSSCore, SSS_Core, _directionList);
         }
 
         public override void OnInspectorGUI()
@@ -324,21 +532,77 @@ namespace AppleteaSystems.StageSyncSystem
 
             EditorGUILayout.Space();
 
-            // 演出一覧
+            // 演出一覧（ソート＆手動並び替え対応）
             EditorGUILayout.BeginVertical(GUI.skin.box);
-            string listLabel = isJapanese ? "演出一覧" : "Direction List";
-            isFoldout = EditorGUILayout.Foldout(isFoldout, listLabel);
+            int dirCount = _directionList != null ? _directionList.Count : 0;
+            string listLabel = isJapanese ? $"演出一覧 ({dirCount})" : $"Direction List ({dirCount})";
+            isFoldout = EditorGUILayout.Foldout(isFoldout, listLabel, true);
             if (isFoldout && _directionList != null)
             {
-                EditorGUI.indentLevel++;
-                for (int i = 0; i < _directionList.Length; i++)
+                EditorGUILayout.Space(2f);
+
+                // ソートボタン群
+                EditorGUILayout.BeginVertical(EditorStyles.helpBox);
+                EditorGUILayout.LabelField(isJapanese ? "ソート (並び替え)" : "Sort Directions", EditorStyles.miniBoldLabel);
+
+                // 1. 演出名ソート
+                EditorGUILayout.BeginHorizontal();
+                EditorGUILayout.LabelField(isJapanese ? "演出名" : "Direction Name", GUILayout.Width(105f));
+                if (GUILayout.Button(isJapanese ? "昇順 (A→Z)" : "Asc (A→Z)"))
                 {
-                    if (_directionList[i] != null)
-                    {
-                        EditorGUILayout.LabelField((i + 1) + ". " + _directionList[i].directionName, EditorStyles.boldLabel);
-                    }
+                    SortDirections(CompareByDirectionNameAsc);
                 }
-                EditorGUI.indentLevel--;
+                if (GUILayout.Button(isJapanese ? "降順 (Z→A)" : "Desc (Z→A)"))
+                {
+                    SortDirections(CompareByDirectionNameDesc);
+                }
+                EditorGUILayout.EndHorizontal();
+
+                // 2. GameObject名ソート
+                EditorGUILayout.BeginHorizontal();
+                EditorGUILayout.LabelField(isJapanese ? "GameObject名" : "GameObject Name", GUILayout.Width(105f));
+                if (GUILayout.Button(isJapanese ? "昇順 (A→Z)" : "Asc (A→Z)"))
+                {
+                    SortDirections(CompareByGameObjectNameAsc);
+                }
+                if (GUILayout.Button(isJapanese ? "降順 (Z→A)" : "Desc (Z→A)"))
+                {
+                    SortDirections(CompareByGameObjectNameDesc);
+                }
+                EditorGUILayout.EndHorizontal();
+
+                // 3. Hierarchy順ソート
+                EditorGUILayout.BeginHorizontal();
+                EditorGUILayout.LabelField(isJapanese ? "Hierarchy" : "Hierarchy", GUILayout.Width(105f));
+                if (GUILayout.Button(isJapanese ? "Hierarchy順でソート" : "Sort by Hierarchy Order"))
+                {
+                    SortDirections(CompareByHierarchyOrder);
+                }
+                EditorGUILayout.EndHorizontal();
+
+                EditorGUILayout.EndVertical();
+
+                EditorGUILayout.Space(4f);
+
+                // 手動並び替えリスト (ReorderableList + ▲/▼ボタン)
+                if (_reorderableList == null)
+                {
+                    SetupReorderableList();
+                }
+
+                _pendingMoveFrom = -1;
+                _pendingMoveTo = -1;
+                _reorderableList.DoLayoutList();
+
+                if (_pendingMoveFrom >= 0 && _pendingMoveTo >= 0 &&
+                    _pendingMoveFrom < _directionList.Count && _pendingMoveTo < _directionList.Count)
+                {
+                    DirectionObject movedItem = _directionList[_pendingMoveFrom];
+                    _directionList.RemoveAt(_pendingMoveFrom);
+                    _directionList.Insert(_pendingMoveTo, movedItem);
+                    _reorderableList.index = _pendingMoveTo;
+                    ApplyDirectionOrder(_directionController, directionController, _SSSCore, SSS_Core, _directionList);
+                }
             }
             EditorGUILayout.EndVertical();
 
@@ -390,7 +654,7 @@ namespace AppleteaSystems.StageSyncSystem
         }
     }
 
-    // Playモード突入時およびワールドビルド時に自動的にプレイヤー参照・Bridgeをセットアップ
+    // Playモード突入時およびワールドビルド時に自動的にプレイヤー参照・Bridge・演出リストをセットアップ
     public class StageSyncSystemBuildProcess : IProcessSceneWithReport
     {
         // YamaPlayerBuildProcess (-10) より前に実行して親子関係変更前にControllerを確実に捕捉する
@@ -408,22 +672,18 @@ namespace AppleteaSystems.StageSyncSystem
             StageSyncSystem_Editor.SetVideoPlayers(yamaController, iwasyncCore, sssCoreSO);
             StageSyncSystem_Editor.SetupBridges(sssCore, yamaController, iwasyncCore, sssCoreSO);
 
-            StageSyncSystem_Editor.GetDirectionList(out DirectionObject[] directions);
-            if (directions != null && directions.Length > 0)
+            StageSyncSystem_Editor.GetSyncedDirectionList(sssCoreSO, out List<DirectionObject> directions);
+            DirectionController dirController = sssCore.GetComponentInParent<DirectionController>();
+            if (dirController != null)
             {
-                SerializedProperty dirProp = sssCoreSO.FindProperty("_directions");
-                if (dirProp != null && dirProp.arraySize == 0)
-                {
-                    dirProp.arraySize = directions.Length;
-                    for (int i = 0; i < directions.Length; i++)
-                    {
-                        dirProp.GetArrayElementAtIndex(i).objectReferenceValue = directions[i];
-                    }
-                    sssCoreSO.ApplyModifiedProperties();
-                }
+                SerializedObject dirControllerSO = new SerializedObject(dirController);
+                StageSyncSystem_Editor.ApplyDirectionOrder(dirController, dirControllerSO, sssCore, sssCoreSO, directions);
             }
-
-            UdonSharpEditorUtility.CopyProxyToUdon(sssCore);
+            else if (directions != null && directions.Count > 0)
+            {
+                StageSyncSystem_Editor.SettingDirection_Core(sssCoreSO, directions);
+                UdonSharpEditorUtility.CopyProxyToUdon(sssCore);
+            }
         }
     }
 }
