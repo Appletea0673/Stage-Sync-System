@@ -106,6 +106,8 @@ namespace AppleteaSystems.StageSyncSystem
         DataDictionary _pairDelays = new DataDictionary();
         DataList _knownPlayers = new DataList();
         float _networkDelay = 0f;
+        bool _isStageOffsetLocked = false;
+        bool _hasPendingLatencyUpdate = false;
 
         #region Accessor
 
@@ -204,16 +206,26 @@ namespace AppleteaSystems.StageSyncSystem
         {
             if (Utilities.IsValid(player) && !player.isLocal)
             {
+                if (_isStagePlaying && !_isWaitingForReady)
+                {
+                    // 上演中に新規プレイヤーが入室した場合は既存プレイヤーのオフセット更新を保留し、上演終了後に再計算する
+                    _hasPendingLatencyUpdate = true;
+                }
+
                 if (Networking.IsOwner(gameObject))
                 {
                     RequestSerialization();
-                    if (IsUsingIwaSync() && Iwasync_core.isOwner)
+                    // 上演中に動画プレイヤー側の RequestSerialization を呼ぶと既存全員に強制シーク(DoSync)が走るため非再生時のみ実行
+                    if (!_isStagePlaying)
                     {
-                        Iwasync_core.RequestSerialization();
-                    }
-                    else if (IsUsingYamaPlayer() && Networking.IsOwner(YamaPlayer_controller.gameObject))
-                    {
-                        YamaPlayer_controller.RequestSerialization();
+                        if (IsUsingIwaSync() && Iwasync_core.isOwner)
+                        {
+                            Iwasync_core.RequestSerialization();
+                        }
+                        else if (IsUsingYamaPlayer() && Networking.IsOwner(YamaPlayer_controller.gameObject))
+                        {
+                            YamaPlayer_controller.RequestSerialization();
+                        }
                     }
                 }
 
@@ -226,12 +238,13 @@ namespace AppleteaSystems.StageSyncSystem
             if (Utilities.IsValid(player) && player.isLocal)
             {
                 ApplyOffset();
-                SendCustomEventDelayedSeconds(nameof(RequestLatencyUpdate), 1.0f);
+                SendCustomEventDelayedSeconds(nameof(RequestLatencyUpdate), 1.5f);
             }
         }
 
         public override void OnPlayerLeft(VRCPlayerApi player)
         {
+            bool hadPerformer = HasActivePerformer();
             if (Utilities.IsValid(player))
             {
                 int leftId = player.playerId;
@@ -240,6 +253,18 @@ namespace AppleteaSystems.StageSyncSystem
                 RemoveFromList(_expectedPlayerIds, leftId);
                 RemoveFromList(_readyPlayerIds, leftId);
                 RemoveFromList(_failedPlayerIds, leftId);
+            }
+
+            if (hadPerformer != HasActivePerformer())
+            {
+                if (_isStagePlaying && !_isWaitingForReady && _isStageOffsetLocked)
+                {
+                    _hasPendingLatencyUpdate = true;
+                }
+                else
+                {
+                    ApplyOffset();
+                }
             }
 
             if (Networking.IsOwner(gameObject) && _isWaitingForReady)
@@ -258,10 +283,15 @@ namespace AppleteaSystems.StageSyncSystem
             else if (_isStagePlaying)
             {
                 RestoreVideoPlayerVolume();
-                ApplyOffset();
-                if (IsVideoPlayerPlaying())
+                // 既に現在のセッションを再生中の既存プレイヤーは、途中参加者入室時のシリアライズで再同期しないように保護
+                if (_localStartedSessionId != _playbackSessionId)
                 {
-                    SyncActiveDirection(true);
+                    ApplyOffset();
+                    if (IsVideoPlayerPlaying())
+                    {
+                        _localStartedSessionId = _playbackSessionId;
+                        SyncActiveDirection(true);
+                    }
                 }
             }
             else
@@ -434,6 +464,7 @@ namespace AppleteaSystems.StageSyncSystem
             RestoreVideoPlayerVolume();
             _isStagePlaying = false;
             StopAllDirections();
+            OnStagePlaybackEnded();
         }
 
         public override void OnVideoEnd()
@@ -442,6 +473,7 @@ namespace AppleteaSystems.StageSyncSystem
             _isStagePlaying = false;
             RestoreVideoPlayerVolume();
             StopAllDirections();
+            OnStagePlaybackEnded();
 
             if (Networking.IsOwner(gameObject))
             {
@@ -487,6 +519,11 @@ namespace AppleteaSystems.StageSyncSystem
 
         #region Synchronized Ready, Error Check & Start (NetworkCallable)
 
+        private bool HasActivePerformer()
+        {
+            return _isPerformer || _performerPlayerIds.Count > 0;
+        }
+
         private void SyncLocalPerformerState()
         {
             if (!Utilities.IsValid(Networking.LocalPlayer)) return;
@@ -503,6 +540,8 @@ namespace AppleteaSystems.StageSyncSystem
 
         private void UpdatePerformerIdList(int playerId, bool isPerformer)
         {
+            bool hadPerformer = _performerPlayerIds.Count > 0;
+
             if (isPerformer)
             {
                 if (!_performerPlayerIds.Contains(playerId))
@@ -513,6 +552,25 @@ namespace AppleteaSystems.StageSyncSystem
             else
             {
                 RemoveFromList(_performerPlayerIds, playerId);
+            }
+
+            bool hasPerformer = _performerPlayerIds.Count > 0;
+            if (!hadPerformer && hasPerformer)
+            {
+                // 演者が0人→1人以上になったタイミングで初めて遅延計測を実行
+                TriggerBeaconLatencyPing();
+            }
+
+            if (hadPerformer != hasPerformer)
+            {
+                if (_isStagePlaying && !_isWaitingForReady && _isStageOffsetLocked)
+                {
+                    _hasPendingLatencyUpdate = true;
+                }
+                else
+                {
+                    ApplyOffset();
+                }
             }
         }
 
@@ -535,6 +593,8 @@ namespace AppleteaSystems.StageSyncSystem
             _localReadySessionId = -1;
             _localErrorSessionId = -1;
             _localStartedSessionId = -1;
+            _isStageOffsetLocked = false;
+            _hasPendingLatencyUpdate = false;
             _loadingStartTime = Time.time;
 
             if (_isPerformer)
@@ -545,8 +605,11 @@ namespace AppleteaSystems.StageSyncSystem
             MuteVideoPlayerForLoading();
             StopAllDirections();
 
-            // 動画ロード時間を利用してインスタンス内の通信遅延を計測
-            TriggerBeaconLatencyPing();
+            // 演者が存在する場合のみ動画ロード時間を利用してインスタンス内の通信遅延を計測
+            if (HasActivePerformer())
+            {
+                TriggerBeaconLatencyPing();
+            }
         }
 
         private void ReportLocalPlayerReady()
@@ -778,6 +841,7 @@ namespace AppleteaSystems.StageSyncSystem
             StopLocalVideoPlayer();
             RestoreVideoPlayerVolume();
             StopAllDirections();
+            OnStagePlaybackEnded();
         }
 
         [NetworkCallable(100)]
@@ -791,6 +855,7 @@ namespace AppleteaSystems.StageSyncSystem
             _stageStartServerTime = startServerTime;
             _isWaitingForReady = false;
             _isStagePlaying = true;
+            _isStageOffsetLocked = true;
 
             RestoreVideoPlayerVolume();
             ResumeLocalVideoPlayer();
@@ -817,6 +882,7 @@ namespace AppleteaSystems.StageSyncSystem
         public void RequestLatencyUpdate()
         {
             if (!Utilities.IsValid(Networking.LocalPlayer)) return;
+            if (!HasActivePerformer()) return;
             SendCustomNetworkEvent(NetworkEventTarget.All, nameof(NetRequestBeaconPings));
             SendLatencyPing();
         }
@@ -830,6 +896,7 @@ namespace AppleteaSystems.StageSyncSystem
         private void TriggerBeaconLatencyPing()
         {
             if (!Utilities.IsValid(Networking.LocalPlayer)) return;
+            if (!HasActivePerformer()) return;
             int beaconOrder = GetLocalBeaconIndex();
             if (beaconOrder >= 0 && beaconOrder < 3)
             {
@@ -980,11 +1047,41 @@ namespace AppleteaSystems.StageSyncSystem
 
         public void UpdateNetworkDelay()
         {
+            // 上演中かつ既に自分のオフセットが確定している既存プレイヤーは、上演終了まで遅延再計算・オフセット更新を保留する
+            if (_isStagePlaying && !_isWaitingForReady && _isStageOffsetLocked)
+            {
+                _hasPendingLatencyUpdate = true;
+                return;
+            }
+
             float prevDelay = _networkDelay;
             _networkDelay = Mathf.Clamp(GetServerDelaySeconds(), 0f, 1f);
-            if (_isStagePlaying && !_isWaitingForReady && Mathf.Abs(_networkDelay - prevDelay) > 0.001f)
+            if (_isStagePlaying && !_isWaitingForReady)
             {
+                // 上演中に途中参加したプレイヤー本人のみ、自身の初回遅延計測が完了した時点で一度だけオフセットを適用しロックする
+                if (_networkDelay > 0f)
+                {
+                    _isStageOffsetLocked = true;
+                    if (Mathf.Abs(_networkDelay - prevDelay) > 0.001f)
+                    {
+                        ApplyOffset();
+                    }
+                }
+            }
+        }
+
+        private void OnStagePlaybackEnded()
+        {
+            _isStageOffsetLocked = false;
+            if (_hasPendingLatencyUpdate)
+            {
+                _hasPendingLatencyUpdate = false;
+                UpdateNetworkDelay();
                 ApplyOffset();
+                if (HasActivePerformer())
+                {
+                    TriggerBeaconLatencyPing();
+                }
             }
         }
 
@@ -1338,10 +1435,15 @@ namespace AppleteaSystems.StageSyncSystem
         }
 
         // Danceモード相当のオフセット計算 (秒単位)
+        // 演者が不在の場合: 全員 0秒 (遅延計測・オフセット補正を省略)
         // 演者: +NetworkDelay (2人以下等でNetworkDelay未計測時は AudienceDelays をフォールバック使用)
         // 観客: -NetworkDelay
         private float GetOffsetSeconds()
         {
+            if (!HasActivePerformer())
+            {
+                return 0f;
+            }
             if (_isPerformer)
             {
                 return (_networkDelay > 0f) ? _networkDelay : (AudienceDelays / 1000f);
@@ -1359,11 +1461,19 @@ namespace AppleteaSystems.StageSyncSystem
         {
             if (IsUsingYamaPlayer())
             {
-                YamaPlayer_controller.LocalDelay = GetOffsetSeconds();
+                float targetDelay = GetOffsetSeconds();
+                if (Mathf.Abs(YamaPlayer_controller.LocalDelay - targetDelay) > 0.0005f)
+                {
+                    YamaPlayer_controller.LocalDelay = targetDelay;
+                }
             }
             else if (IsUsingIwaSync())
             {
-                Iwasync_core.offsetTime = GetOffsetTime();
+                int targetOffset = GetOffsetTime();
+                if (Iwasync_core.offsetTime != targetOffset)
+                {
+                    Iwasync_core.offsetTime = targetOffset;
+                }
             }
         }
 
