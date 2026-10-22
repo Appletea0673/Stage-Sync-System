@@ -1032,9 +1032,11 @@ namespace AppleteaSystems.StageSyncSystem
             {
                 for (int i = 0; i < _performerEnableObjects.Length; i++)
                 {
-                    if (_performerEnableObjects[i] != null && _performerEnableObjects[i].activeSelf != _isPerformer)
+                    GameObject obj = _performerEnableObjects[i];
+                    if (obj == null || IsProtectedSystemObject(obj)) continue;
+                    if (obj.activeSelf != _isPerformer)
                     {
-                        _performerEnableObjects[i].SetActive(_isPerformer);
+                        obj.SetActive(_isPerformer);
                     }
                 }
             }
@@ -1044,12 +1046,53 @@ namespace AppleteaSystems.StageSyncSystem
                 bool activeForCurrentRole = !_isPerformer;
                 for (int i = 0; i < _performerDisableObjects.Length; i++)
                 {
-                    if (_performerDisableObjects[i] != null && _performerDisableObjects[i].activeSelf != activeForCurrentRole)
+                    GameObject obj = _performerDisableObjects[i];
+                    if (obj == null || IsProtectedSystemObject(obj)) continue;
+                    if (obj.activeSelf != activeForCurrentRole)
                     {
-                        _performerDisableObjects[i].SetActive(activeForCurrentRole);
+                        obj.SetActive(activeForCurrentRole);
                     }
                 }
             }
+        }
+
+        private bool IsProtectedSystemObject(GameObject obj)
+        {
+            if (obj == null) return true;
+            Transform t = obj.transform;
+
+            // 1. SSSCore自身・子階層（Bridge等）・親階層（Stage Sync Systemルート等）の保護
+            if (t == transform || transform.IsChildOf(t) || t.IsChildOf(transform)) return true;
+
+            // 2. SSSの主要コンポーネントおよび動画プレイヤーを含むオブジェクト（またはその親階層）の保護
+            if (obj.GetComponentInChildren<SSSCore>(true) != null) return true;
+            if (obj.GetComponentInChildren<DirectionController>(true) != null) return true;
+            if (obj.GetComponentInChildren<DirectionObject>(true) != null) return true;
+            if (obj.GetComponentInChildren<DirectionSwitch>(true) != null) return true;
+            if (obj.GetComponentInChildren<PerformerChecker>(true) != null) return true;
+            if (obj.GetComponentInChildren<UIOperatorChecker>(true) != null) return true;
+            if (obj.GetComponentInChildren<Controller>(true) != null) return true;
+            if (obj.GetComponentInChildren<VideoCore>(true) != null) return true;
+
+            // 3. 動画プレイヤー・演出オブジェクトの子階層の保護
+            if (YamaPlayer_controller != null && t.IsChildOf(YamaPlayer_controller.transform)) return true;
+            if (Iwasync_core != null && t.IsChildOf(Iwasync_core.transform)) return true;
+            if (_directions != null)
+            {
+                for (int i = 0; i < _directions.Length; i++)
+                {
+                    if (_directions[i] != null && t.IsChildOf(_directions[i].transform)) return true;
+                }
+            }
+
+            // 4. Stage Sync System の UI 階層の保護
+            if (transform.parent != null)
+            {
+                Transform uiRoot = transform.parent.Find("UI");
+                if (uiRoot != null && (t == uiRoot || uiRoot.IsChildOf(t) || t.IsChildOf(uiRoot))) return true;
+            }
+
+            return false;
         }
 
         private bool ShouldPlayDirection(DirectionObject dirObj)

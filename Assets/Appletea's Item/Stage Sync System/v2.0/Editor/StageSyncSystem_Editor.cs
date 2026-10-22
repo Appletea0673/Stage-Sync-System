@@ -546,6 +546,7 @@ namespace AppleteaSystems.StageSyncSystem
                     ? "演者のみ有効化するオブジェクト"
                     : "Objects Enabled Only for Performers";
                 EditorGUILayout.PropertyField(enableObjsProp, new GUIContent(enableLabel), true);
+                SanitizePerformerObjectArray(enableObjsProp, _SSSCore, _directionController);
             }
             SerializedProperty disableObjsProp = SSS_Core.FindProperty("_performerDisableObjects");
             if (disableObjsProp != null)
@@ -554,6 +555,7 @@ namespace AppleteaSystems.StageSyncSystem
                     ? "演者のみ無効化するオブジェクト"
                     : "Objects Disabled Only for Performers";
                 EditorGUILayout.PropertyField(disableObjsProp, new GUIContent(disableLabel), true);
+                SanitizePerformerObjectArray(disableObjsProp, _SSSCore, _directionController);
             }
             EditorGUI.indentLevel--;
             EditorGUILayout.EndVertical();
@@ -642,6 +644,61 @@ namespace AppleteaSystems.StageSyncSystem
             }
         }
 
+        internal static void SanitizePerformerObjectArray(SerializedProperty arrayProp, SSSCore sssCore, DirectionController dirController)
+        {
+            if (arrayProp == null || !arrayProp.isArray) return;
+
+            for (int i = 0; i < arrayProp.arraySize; i++)
+            {
+                SerializedProperty elem = arrayProp.GetArrayElementAtIndex(i);
+                GameObject obj = elem.objectReferenceValue as GameObject;
+                if (obj != null && IsProtectedSystemObject(obj, sssCore, dirController))
+                {
+                    Debug.LogWarning(
+                        $"[Stage Sync System] '{obj.name}' はSSSの主要機能（または動画プレイヤー・演出オブジェクト）を含むため、" +
+                        "演者専用オブジェクト切り替えの対象には設定できません。登録を解除しました。",
+                        obj
+                    );
+                    elem.objectReferenceValue = null;
+                }
+            }
+        }
+
+        internal static bool IsProtectedSystemObject(GameObject obj, SSSCore sssCore, DirectionController dirController)
+        {
+            if (obj == null) return false;
+            Transform t = obj.transform;
+
+            // 1. SSSCore自身・子階層（Bridge等）・親階層の保護
+            if (sssCore != null)
+            {
+                Transform coreTransform = sssCore.transform;
+                if (t == coreTransform || coreTransform.IsChildOf(t) || t.IsChildOf(coreTransform)) return true;
+            }
+
+            // 2. DirectionControllerルート・UI階層の保護
+            if (dirController != null)
+            {
+                Transform dcTransform = dirController.transform;
+                if (t == dcTransform || dcTransform.IsChildOf(t)) return true;
+
+                Transform uiRoot = dcTransform.Find("UI");
+                if (uiRoot != null && (t == uiRoot || uiRoot.IsChildOf(t) || t.IsChildOf(uiRoot))) return true;
+            }
+
+            // 3. SSS主要コンポーネント・動画プレイヤー・演出コンポーネントを含むオブジェクト（または親・子階層）の保護
+            if (obj.GetComponentInChildren<SSSCore>(true) != null || obj.GetComponentInParent<SSSCore>(true) != null) return true;
+            if (obj.GetComponentInChildren<DirectionController>(true) != null) return true;
+            if (obj.GetComponentInChildren<DirectionObject>(true) != null || obj.GetComponentInParent<DirectionObject>(true) != null) return true;
+            if (obj.GetComponentInChildren<DirectionSwitch>(true) != null || obj.GetComponentInParent<DirectionSwitch>(true) != null) return true;
+            if (obj.GetComponentInChildren<PerformerChecker>(true) != null || obj.GetComponentInParent<PerformerChecker>(true) != null) return true;
+            if (obj.GetComponentInChildren<UIOperatorChecker>(true) != null || obj.GetComponentInParent<UIOperatorChecker>(true) != null) return true;
+            if (obj.GetComponentInChildren<Controller>(true) != null || obj.GetComponentInParent<Controller>(true) != null) return true;
+            if (obj.GetComponentInChildren<VideoCore>(true) != null || obj.GetComponentInParent<VideoCore>(true) != null) return true;
+
+            return false;
+        }
+
         private void DrawIntegrationStatusBox(string title, bool isLinked)
         {
             EditorGUILayout.BeginVertical(GUI.skin.box);
@@ -702,6 +759,12 @@ namespace AppleteaSystems.StageSyncSystem
 
             StageSyncSystem_Editor.GetSyncedDirectionList(sssCoreSO, out List<DirectionObject> directions);
             DirectionController dirController = sssCore.GetComponentInParent<DirectionController>();
+
+            sssCoreSO.Update();
+            StageSyncSystem_Editor.SanitizePerformerObjectArray(sssCoreSO.FindProperty("_performerEnableObjects"), sssCore, dirController);
+            StageSyncSystem_Editor.SanitizePerformerObjectArray(sssCoreSO.FindProperty("_performerDisableObjects"), sssCore, dirController);
+            sssCoreSO.ApplyModifiedProperties();
+
             if (dirController != null)
             {
                 SerializedObject dirControllerSO = new SerializedObject(dirController);
