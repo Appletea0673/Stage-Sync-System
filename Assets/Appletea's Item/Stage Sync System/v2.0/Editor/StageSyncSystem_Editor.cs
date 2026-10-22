@@ -532,6 +532,34 @@ namespace AppleteaSystems.StageSyncSystem
 
             EditorGUILayout.Space();
 
+            // 演者専用オブジェクト切り替え設定
+            EditorGUILayout.BeginVertical(GUI.skin.box);
+            EditorGUILayout.LabelField(
+                isJapanese ? "演者専用オブジェクト切り替え (Performer Object Toggle)" : "Performer Object Toggle",
+                EditorStyles.boldLabel
+            );
+            EditorGUI.indentLevel++;
+            SerializedProperty enableObjsProp = SSS_Core.FindProperty("_performerEnableObjects");
+            if (enableObjsProp != null)
+            {
+                string enableLabel = isJapanese
+                    ? "演者のみ有効化するオブジェクト"
+                    : "Objects Enabled Only for Performers";
+                EditorGUILayout.PropertyField(enableObjsProp, new GUIContent(enableLabel), true);
+            }
+            SerializedProperty disableObjsProp = SSS_Core.FindProperty("_performerDisableObjects");
+            if (disableObjsProp != null)
+            {
+                string disableLabel = isJapanese
+                    ? "演者のみ無効化するオブジェクト"
+                    : "Objects Disabled Only for Performers";
+                EditorGUILayout.PropertyField(disableObjsProp, new GUIContent(disableLabel), true);
+            }
+            EditorGUI.indentLevel--;
+            EditorGUILayout.EndVertical();
+
+            EditorGUILayout.Space();
+
             // 演出一覧（ソート＆手動並び替え対応）
             EditorGUILayout.BeginVertical(GUI.skin.box);
             int dirCount = _directionList != null ? _directionList.Count : 0;

@@ -43,6 +43,15 @@ namespace AppleteaSystems.StageSyncSystem
         [SerializeField]
         VideoPlayerType _videoPlayerType = VideoPlayerType.YamaPlayer;
 
+        [Header("Performer Object Toggle")]
+        [SerializeField]
+        [Tooltip("演者エリア内でのみ有効化するオブジェクト群（演者時 ON / 観客時 OFF）")]
+        GameObject[] _performerEnableObjects;
+
+        [SerializeField]
+        [Tooltip("演者エリア内でのみ無効化するオブジェクト群（演者時 OFF / 観客時 ON）")]
+        GameObject[] _performerDisableObjects;
+
         [Header("Manual Parameters")]
         [SerializeField]
         [Tooltip("Milliseconds (Fallback delay when fewer than 3 players are in the instance)")]
@@ -138,6 +147,18 @@ namespace AppleteaSystems.StageSyncSystem
 
         public float NetworkDelay => _networkDelay;
 
+        public GameObject[] PerformerEnableObjects
+        {
+            get => _performerEnableObjects;
+            set => _performerEnableObjects = value;
+        }
+
+        public GameObject[] PerformerDisableObjects
+        {
+            get => _performerDisableObjects;
+            set => _performerDisableObjects = value;
+        }
+
         public bool IsPerformer
         {
             get => _isPerformer;
@@ -145,6 +166,7 @@ namespace AppleteaSystems.StageSyncSystem
             {
                 _isPerformer = value;
                 ApplyOffset();
+                ApplyPerformerObjects();
                 SyncLocalPerformerState();
                 if (_isStagePlaying && !_isWaitingForReady && IsVideoPlayerPlaying())
                 {
@@ -165,6 +187,7 @@ namespace AppleteaSystems.StageSyncSystem
         {
             InitializeBridges();
             InitializeVolumeTemp();
+            ApplyPerformerObjects();
 
             if (_directions != null)
             {
@@ -1000,6 +1023,32 @@ namespace AppleteaSystems.StageSyncSystem
             if (Utilities.IsValid(Networking.LocalPlayer) && !Networking.IsOwner(Networking.LocalPlayer, gameObject))
             {
                 Networking.SetOwner(Networking.LocalPlayer, gameObject);
+            }
+        }
+
+        private void ApplyPerformerObjects()
+        {
+            if (_performerEnableObjects != null)
+            {
+                for (int i = 0; i < _performerEnableObjects.Length; i++)
+                {
+                    if (_performerEnableObjects[i] != null && _performerEnableObjects[i].activeSelf != _isPerformer)
+                    {
+                        _performerEnableObjects[i].SetActive(_isPerformer);
+                    }
+                }
+            }
+
+            if (_performerDisableObjects != null)
+            {
+                bool activeForCurrentRole = !_isPerformer;
+                for (int i = 0; i < _performerDisableObjects.Length; i++)
+                {
+                    if (_performerDisableObjects[i] != null && _performerDisableObjects[i].activeSelf != activeForCurrentRole)
+                    {
+                        _performerDisableObjects[i].SetActive(activeForCurrentRole);
+                    }
+                }
             }
         }
 
