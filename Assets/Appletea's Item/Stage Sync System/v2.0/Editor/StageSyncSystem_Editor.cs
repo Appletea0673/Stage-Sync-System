@@ -32,7 +32,7 @@ namespace AppleteaSystems.StageSyncSystem
         List<DirectionObject> _directionList = new List<DirectionObject>();
         ReorderableList _reorderableList;
 
-        const string _directionSWRootPath = "UI/Canvas/Panel/Scroll View/Scroll View/Viewport/Content";
+        const string _directionSWRootPath = "UI/Canvas/Panel/Playlist Menu/Scroll View/Scroll View/Viewport/Content";
         const string _directionSW_BaseName = "DirectionSW";
         const string _bridgeObjectName = "Bridge";
 
