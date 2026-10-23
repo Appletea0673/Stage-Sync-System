@@ -22,10 +22,12 @@ namespace AppleteaSystems.StageSyncSystem
         // SerializedObjectでScriptのInstanceを管理
         SerializedObject SSS_Core;
         SerializedObject directionController;
+        SerializedObject uiControllerSO;
 
         Texture2D Thumbnail;
         SSSCore _SSSCore;
         DirectionController _directionController;
+        SSSUIController _uiController;
 
         Controller _YamaPlayer_Controller = null;
         VideoCore _Iwasync_Core = null;
@@ -35,6 +37,7 @@ namespace AppleteaSystems.StageSyncSystem
         const string _directionSWRootPath = "UI/Canvas/Panel/Playlist Menu/Scroll View/Scroll View/Viewport/Content";
         const string _directionSW_BaseName = "DirectionSW";
         const string _bridgeObjectName = "Bridge";
+        const string _uiObjectName = "UI";
 
         bool isFoldout = true;
         int _pendingMoveFrom = -1;
@@ -63,14 +66,23 @@ namespace AppleteaSystems.StageSyncSystem
             SetVideoPlayers(_YamaPlayer_Controller, _Iwasync_Core, SSS_Core);
             SetSSSCore(directionController, _SSSCore);
 
-            // シーン上のオブジェクトである場合、Bridgeの自動構成とUIスイッチの生成を実行
+            // シーン上のオブジェクトである場合、Bridge・UIControllerの自動構成とUIスイッチの生成を実行
             if (!EditorUtility.IsPersistent(_directionController.gameObject))
             {
                 SetupBridges(_SSSCore, _YamaPlayer_Controller, _Iwasync_Core, SSS_Core);
+                SetupUIController(_directionController, directionController, _SSSCore, SSS_Core, out _uiController, out uiControllerSO);
 
                 GetSyncedDirectionList(SSS_Core, out _directionList);
-                ApplyDirectionOrder(_directionController, directionController, _SSSCore, SSS_Core, _directionList);
+                ApplyDirectionOrder(_directionController, directionController, _SSSCore, SSS_Core, _uiController, uiControllerSO, _directionList);
                 SetupReorderableList();
+            }
+            else
+            {
+                _uiController = GetUIController(_directionController);
+                if (_uiController != null)
+                {
+                    uiControllerSO = new SerializedObject(_uiController);
+                }
             }
         }
 
@@ -132,7 +144,7 @@ namespace AppleteaSystems.StageSyncSystem
 
             _reorderableList.onReorderCallback = (ReorderableList list) =>
             {
-                ApplyDirectionOrder(_directionController, directionController, _SSSCore, SSS_Core, _directionList);
+                ApplyDirectionOrder(_directionController, directionController, _SSSCore, SSS_Core, _uiController, uiControllerSO, _directionList);
             };
         }
 
@@ -159,6 +171,18 @@ namespace AppleteaSystems.StageSyncSystem
             }
             SSSCore[] coreTemp = FindObjectsByType<SSSCore>(FindObjectsInactive.Include, FindObjectsSortMode.None);
             if (coreTemp != null && coreTemp.Length > 0) return coreTemp[0];
+            return null;
+        }
+
+        internal static SSSUIController GetUIController(DirectionController dirController = null)
+        {
+            if (dirController != null)
+            {
+                SSSUIController childUI = dirController.GetComponentInChildren<SSSUIController>(true);
+                if (childUI != null) return childUI;
+            }
+            SSSUIController[] uiTemp = FindObjectsByType<SSSUIController>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            if (uiTemp != null && uiTemp.Length > 0) return uiTemp[0];
             return null;
         }
 
@@ -287,6 +311,8 @@ namespace AppleteaSystems.StageSyncSystem
             SerializedObject dirControllerSO,
             SSSCore sssCore,
             SerializedObject sssCoreSO,
+            SSSUIController uiController,
+            SerializedObject uiControllerSO,
             List<DirectionObject> directionList)
         {
             if (dirController == null || sssCore == null || directionList == null) return;
@@ -295,17 +321,40 @@ namespace AppleteaSystems.StageSyncSystem
             Transform directorSWRoot = dirController.transform.Find(_directionSWRootPath);
             if (directorSWRoot != null)
             {
+                if (uiController != null)
+                {
+                    VRC.Udon.UdonBehaviour uiUdon = UdonSharpEditorUtility.GetBackingUdonBehaviour(uiController);
+                    Transform baseBtnTransform = directorSWRoot.Find($"{_directionSW_BaseName}/Button");
+                    if (uiUdon != null && baseBtnTransform != null)
+                    {
+                        Button baseBtn = baseBtnTransform.GetComponent<Button>();
+                        if (baseBtn != null)
+                        {
+                            SerializedObject baseBtnSO = new SerializedObject(baseBtn);
+                            baseBtnSO.Update();
+                            EnsurePersistentSendCustomEvent(baseBtnSO, "m_OnClick.m_PersistentCalls.m_Calls", uiUdon, "OnButtonClicked");
+                            baseBtnSO.ApplyModifiedPropertiesWithoutUndo();
+                        }
+                    }
+                }
+
                 DeleteDirectionSW(directorSWRoot, _directionSW_BaseName);
                 directionSWList = GenerateDirectionSW(directorSWRoot, _directionSW_BaseName, directionList);
             }
 
-            SettingDirection_Controller(dirControllerSO, directionSWList);
+            SettingDirection_UIController(uiControllerSO, directionSWList);
             SettingDirection_Core(sssCoreSO, directionList);
 
             UdonSharpEditorUtility.CopyProxyToUdon(dirController);
             UdonSharpEditorUtility.CopyProxyToUdon(sssCore);
             EditorUtility.SetDirty(dirController);
             EditorUtility.SetDirty(sssCore);
+
+            if (uiController != null)
+            {
+                UdonSharpEditorUtility.CopyProxyToUdon(uiController);
+                EditorUtility.SetDirty(uiController);
+            }
         }
 
         internal static void SetVideoPlayers(Controller yamaController, VideoCore iwasyncCore, SerializedObject sssCoreSO)
@@ -393,6 +442,231 @@ namespace AppleteaSystems.StageSyncSystem
             sssCoreSO.ApplyModifiedProperties();
         }
 
+        internal static void SetupUIController(
+            DirectionController dirController,
+            SerializedObject dirControllerSO,
+            SSSCore sssCore,
+            SerializedObject sssCoreSO,
+            out SSSUIController uiController,
+            out SerializedObject uiSO)
+        {
+            uiController = null;
+            uiSO = null;
+
+            if (dirController == null || EditorUtility.IsPersistent(dirController.gameObject)) return;
+
+            uiController = dirController.GetComponentInChildren<SSSUIController>(true);
+            if (uiController == null && UdonSharpEditorUtility.GetUdonSharpProgramAsset(typeof(SSSUIController)) != null)
+            {
+                Transform uiTransform = dirController.transform.Find(_uiObjectName);
+                GameObject uiGO = uiTransform != null ? uiTransform.gameObject : dirController.gameObject;
+                uiController = uiGO.AddUdonSharpComponent<SSSUIController>();
+                UdonSharpEditorUtility.GetBackingUdonBehaviour(uiController).SyncMethod = Networking.SyncType.Manual;
+            }
+
+            if (uiController == null) return;
+
+            uiSO = new SerializedObject(uiController);
+            uiSO.Update();
+
+            SerializedProperty coreProp = uiSO.FindProperty("_sssCore");
+            if (coreProp != null) coreProp.objectReferenceValue = sssCore;
+
+            Transform root = dirController.transform;
+
+            // Status UI
+            AssignIfNull(uiSO, "_loadedPlayerCountText", FindComponent<Text>(root, "UI/Canvas/Panel/Status/Loaded Player/Loaded Player num"));
+            AssignIfNull(uiSO, "_performerStatusText", FindComponent<Text>(root, "UI/Canvas/Panel/Status/Performer Status/Performer Status"));
+            AssignIfNull(uiSO, "_performerLoadedObject", FindGameObject(root, "UI/Canvas/Panel/Status/Performer Status/Ready"));
+            AssignIfNull(uiSO, "_performerErrorObject", FindGameObject(root, "UI/Canvas/Panel/Status/Performer Status/Warning"));
+            AssignIfNull(uiSO, "_delayStatusText", FindComponent<Text>(root, "UI/Canvas/Panel/Status/Delay Status/Delay Status"));
+
+            // Direction Sort UI
+            Transform sortHorizon = root.Find("UI/Canvas/Panel/Settings Menu/Direction Sort/Horizon");
+            Toggle sortHierarchyToggle = GetChildComponent<Toggle>(sortHorizon, 0);
+            Toggle sortByNameToggle = GetChildComponent<Toggle>(sortHorizon, 1);
+            Toggle sortManualToggle = GetChildComponent<Toggle>(sortHorizon, 2);
+            AssignIfNull(uiSO, "_sortHierarchyToggle", sortHierarchyToggle);
+            AssignIfNull(uiSO, "_sortByNameToggle", sortByNameToggle);
+            AssignIfNull(uiSO, "_sortManualToggle", sortManualToggle);
+
+            // Error Detection (Force Launch) UI
+            Transform errorVertical = root.Find("UI/Canvas/Panel/Settings Menu/Error Detection/Vertical");
+            Toggle ignoreThresholdToggle = GetChildComponent<Toggle>(errorVertical, 0);
+            Toggle ignorePerformerToggle = GetChildComponent<Toggle>(errorVertical, 1);
+            Transform durationFormTransform = errorVertical != null && errorVertical.childCount > 2 ? errorVertical.GetChild(2) : null;
+            Transform durationHorizon = durationFormTransform != null ? durationFormTransform.Find("Horizon") : null;
+            Toggle durationOnceToggle = GetChildComponent<Toggle>(durationHorizon, 0);
+            Toggle durationAlwaysToggle = GetChildComponent<Toggle>(durationHorizon, 1);
+
+            AssignIfNull(uiSO, "_ignoreThresholdToggle", ignoreThresholdToggle);
+            AssignIfNull(uiSO, "_ignorePerformerErrorToggle", ignorePerformerToggle);
+            AssignIfNull(uiSO, "_forceLaunchDurationForm", durationFormTransform != null ? durationFormTransform.gameObject : null);
+            AssignIfNull(uiSO, "_durationOnceToggle", durationOnceToggle);
+            AssignIfNull(uiSO, "_durationAlwaysToggle", durationAlwaysToggle);
+
+            // Delay Calculation UI
+            Transform delayHorizon = root.Find("UI/Canvas/Panel/Settings Menu/Delay Calculation/Horizon");
+            Toggle delayDefaultToggle = GetChildComponent<Toggle>(delayHorizon, 0);
+            Toggle delayFallbackToggle = GetChildComponent<Toggle>(delayHorizon, 1);
+            AssignIfNull(uiSO, "_delayDefaultToggle", delayDefaultToggle);
+            AssignIfNull(uiSO, "_delayFallbackToggle", delayFallbackToggle);
+
+            uiSO.ApplyModifiedProperties();
+
+            // Backing UdonBehaviour への Toggle イベント自動結線
+            VRC.Udon.UdonBehaviour uiUdon = UdonSharpEditorUtility.GetBackingUdonBehaviour(uiController);
+            if (uiUdon != null)
+            {
+                ConfigureToggleForUdon(uiSO.FindProperty("_sortHierarchyToggle")?.objectReferenceValue as Toggle, uiUdon, "OnSortToggleChanged");
+                ConfigureToggleForUdon(uiSO.FindProperty("_sortByNameToggle")?.objectReferenceValue as Toggle, uiUdon, "OnSortToggleChanged");
+                ConfigureToggleForUdon(uiSO.FindProperty("_sortManualToggle")?.objectReferenceValue as Toggle, uiUdon, "OnSortToggleChanged");
+                ConfigureToggleForUdon(uiSO.FindProperty("_sortByNameDescToggle")?.objectReferenceValue as Toggle, uiUdon, "OnSortToggleChanged");
+                ConfigureToggleForUdon(uiSO.FindProperty("_sortByGameObjectNameAscToggle")?.objectReferenceValue as Toggle, uiUdon, "OnSortToggleChanged");
+                ConfigureToggleForUdon(uiSO.FindProperty("_sortByGameObjectNameDescToggle")?.objectReferenceValue as Toggle, uiUdon, "OnSortToggleChanged");
+
+                // Force Launchの2つのスイッチは独立トグルのためToggleGroupを解除して結線
+                ConfigureToggleForUdon(uiSO.FindProperty("_ignoreThresholdToggle")?.objectReferenceValue as Toggle, uiUdon, "OnForceLaunchToggleChanged", clearGroup: true);
+                ConfigureToggleForUdon(uiSO.FindProperty("_ignorePerformerErrorToggle")?.objectReferenceValue as Toggle, uiUdon, "OnForceLaunchToggleChanged", clearGroup: true);
+
+                // 有効期間ラジオボタンは初期状態（Force Launch両方OFF）では操作無効化
+                ConfigureToggleForUdon(uiSO.FindProperty("_durationOnceToggle")?.objectReferenceValue as Toggle, uiUdon, "OnForceLaunchDurationToggleChanged", clearGroup: false, interactable: false);
+                ConfigureToggleForUdon(uiSO.FindProperty("_durationAlwaysToggle")?.objectReferenceValue as Toggle, uiUdon, "OnForceLaunchDurationToggleChanged", clearGroup: false, interactable: false);
+
+                ConfigureToggleForUdon(uiSO.FindProperty("_delayDefaultToggle")?.objectReferenceValue as Toggle, uiUdon, "OnDelayCalculationToggleChanged");
+                ConfigureToggleForUdon(uiSO.FindProperty("_delayFallbackToggle")?.objectReferenceValue as Toggle, uiUdon, "OnDelayCalculationToggleChanged");
+            }
+
+            // DirectionController と SSSCore へ UIController 参照を保存
+            if (dirControllerSO != null)
+            {
+                dirControllerSO.Update();
+                SerializedProperty dcUiProp = dirControllerSO.FindProperty("_uiController");
+                if (dcUiProp != null) dcUiProp.objectReferenceValue = uiController;
+                dirControllerSO.ApplyModifiedProperties();
+            }
+
+            if (sssCoreSO != null)
+            {
+                sssCoreSO.Update();
+                SerializedProperty coreUiProp = sssCoreSO.FindProperty("_uiController");
+                if (coreUiProp != null) coreUiProp.objectReferenceValue = uiController;
+                sssCoreSO.ApplyModifiedProperties();
+            }
+
+            UdonSharpEditorUtility.CopyProxyToUdon(uiController);
+        }
+
+        private static void AssignIfNull(SerializedObject so, string propName, UnityEngine.Object targetObj)
+        {
+            if (so == null || targetObj == null) return;
+            SerializedProperty prop = so.FindProperty(propName);
+            if (prop != null && prop.objectReferenceValue == null)
+            {
+                prop.objectReferenceValue = targetObj;
+            }
+        }
+
+        private static T FindComponent<T>(Transform root, string relativePath) where T : Component
+        {
+            if (root == null) return null;
+            Transform t = root.Find(relativePath);
+            return t != null ? t.GetComponent<T>() : null;
+        }
+
+        private static GameObject FindGameObject(Transform root, string relativePath)
+        {
+            if (root == null) return null;
+            Transform t = root.Find(relativePath);
+            return t != null ? t.gameObject : null;
+        }
+
+        private static T GetChildComponent<T>(Transform parent, int childIndex) where T : Component
+        {
+            if (parent == null || childIndex < 0 || childIndex >= parent.childCount) return null;
+            return parent.GetChild(childIndex).GetComponent<T>();
+        }
+
+        private static void ConfigureToggleForUdon(Toggle toggle, VRC.Udon.UdonBehaviour targetUdon, string eventName, bool clearGroup = false, bool? interactable = null)
+        {
+            if (toggle == null || targetUdon == null) return;
+
+            SerializedObject toggleSO = new SerializedObject(toggle);
+            toggleSO.Update();
+
+            SerializedProperty groupProp = toggleSO.FindProperty("m_Group");
+            if (clearGroup)
+            {
+                if (groupProp != null && groupProp.objectReferenceValue != null)
+                {
+                    groupProp.objectReferenceValue = null;
+                }
+            }
+            else if (groupProp != null)
+            {
+                ToggleGroup tg = groupProp.objectReferenceValue as ToggleGroup;
+                if (tg != null)
+                {
+                    SerializedObject tgSO = new SerializedObject(tg);
+                    tgSO.Update();
+                    SerializedProperty allowOffProp = tgSO.FindProperty("m_AllowSwitchOff");
+                    if (allowOffProp != null && allowOffProp.boolValue)
+                    {
+                        allowOffProp.boolValue = false;
+                        tgSO.ApplyModifiedPropertiesWithoutUndo();
+                    }
+                }
+            }
+
+            if (interactable.HasValue)
+            {
+                SerializedProperty interactableProp = toggleSO.FindProperty("m_Interactable");
+                if (interactableProp != null) interactableProp.boolValue = interactable.Value;
+            }
+
+            EnsurePersistentSendCustomEvent(toggleSO, "onValueChanged.m_PersistentCalls.m_Calls", targetUdon, eventName);
+            toggleSO.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        private static void EnsurePersistentSendCustomEvent(SerializedObject so, string callsPath, VRC.Udon.UdonBehaviour targetUdon, string eventName)
+        {
+            if (so == null || targetUdon == null || string.IsNullOrEmpty(eventName)) return;
+            SerializedProperty callsProp = so.FindProperty(callsPath);
+            if (callsProp == null || !callsProp.isArray) return;
+
+            for (int i = 0; i < callsProp.arraySize; i++)
+            {
+                SerializedProperty call = callsProp.GetArrayElementAtIndex(i);
+                SerializedProperty methodProp = call.FindPropertyRelative("m_MethodName");
+                SerializedProperty strArgProp = call.FindPropertyRelative("m_Arguments.m_StringArgument");
+                if (methodProp != null && methodProp.stringValue == "SendCustomEvent" &&
+                    strArgProp != null && strArgProp.stringValue == eventName)
+                {
+                    SerializedProperty targetProp = call.FindPropertyRelative("m_Target");
+                    if (targetProp != null && targetProp.objectReferenceValue != targetUdon)
+                    {
+                        targetProp.objectReferenceValue = targetUdon;
+                    }
+                    return;
+                }
+            }
+
+            int newIdx = callsProp.arraySize;
+            callsProp.InsertArrayElementAtIndex(newIdx);
+            SerializedProperty newCall = callsProp.GetArrayElementAtIndex(newIdx);
+            newCall.FindPropertyRelative("m_Target").objectReferenceValue = targetUdon;
+            newCall.FindPropertyRelative("m_TargetAssemblyTypeName").stringValue = typeof(VRC.Udon.UdonBehaviour).AssemblyQualifiedName;
+            newCall.FindPropertyRelative("m_MethodName").stringValue = "SendCustomEvent";
+            newCall.FindPropertyRelative("m_Mode").intValue = 5; // PersistentListenerMode.String
+            newCall.FindPropertyRelative("m_Arguments.m_ObjectArgument").objectReferenceValue = null;
+            newCall.FindPropertyRelative("m_Arguments.m_ObjectArgumentAssemblyTypeName").stringValue = "UnityEngine.Object, UnityEngine";
+            newCall.FindPropertyRelative("m_Arguments.m_IntArgument").intValue = 0;
+            newCall.FindPropertyRelative("m_Arguments.m_FloatArgument").floatValue = 0f;
+            newCall.FindPropertyRelative("m_Arguments.m_StringArgument").stringValue = eventName;
+            newCall.FindPropertyRelative("m_Arguments.m_BoolArgument").boolValue = false;
+            newCall.FindPropertyRelative("m_CallState").intValue = 2; // UnityEventCallState.RuntimeOnly
+        }
+
         private void SetSSSCore(SerializedObject dirControllerSO, SSSCore sssCore)
         {
             dirControllerSO.Update();
@@ -432,16 +706,17 @@ namespace AppleteaSystems.StageSyncSystem
             return tempList;
         }
 
-        internal static void SettingDirection_Controller(SerializedObject dirControllerSO, in List<GameObject> directionSWList)
+        internal static void SettingDirection_UIController(SerializedObject targetUIControllerSO, in List<GameObject> directionSWList)
         {
-            if (dirControllerSO == null) return;
-            dirControllerSO.Update();
-            SerializedProperty DirectionSWs = dirControllerSO.FindProperty("_directionSWs");
+            if (targetUIControllerSO == null) return;
+            targetUIControllerSO.Update();
+            SerializedProperty DirectionSWs = targetUIControllerSO.FindProperty("_directionSWs");
+            if (DirectionSWs == null) return;
 
             if (directionSWList == null)
             {
                 DirectionSWs.arraySize = 0;
-                dirControllerSO.ApplyModifiedProperties();
+                targetUIControllerSO.ApplyModifiedProperties();
                 return;
             }
             DirectionSWs.arraySize = directionSWList.Count;
@@ -451,7 +726,7 @@ namespace AppleteaSystems.StageSyncSystem
                 SerializedProperty element = DirectionSWs.GetArrayElementAtIndex(i);
                 element.objectReferenceValue = directionSWList[i].transform.Find("Button").GetComponent<Button>();
             }
-            dirControllerSO.ApplyModifiedProperties();
+            targetUIControllerSO.ApplyModifiedProperties();
         }
 
         internal static void SettingDirection_Core(SerializedObject Core, in List<DirectionObject> directionList)
@@ -480,7 +755,7 @@ namespace AppleteaSystems.StageSyncSystem
         {
             if (_directionList == null || _directionList.Count <= 1) return;
             _directionList.Sort(comparison);
-            ApplyDirectionOrder(_directionController, directionController, _SSSCore, SSS_Core, _directionList);
+            ApplyDirectionOrder(_directionController, directionController, _SSSCore, SSS_Core, _uiController, uiControllerSO, _directionList);
         }
 
         public override void OnInspectorGUI()
@@ -631,7 +906,7 @@ namespace AppleteaSystems.StageSyncSystem
                     _directionList.RemoveAt(_pendingMoveFrom);
                     _directionList.Insert(_pendingMoveTo, movedItem);
                     _reorderableList.index = _pendingMoveTo;
-                    ApplyDirectionOrder(_directionController, directionController, _SSSCore, SSS_Core, _directionList);
+                    ApplyDirectionOrder(_directionController, directionController, _SSSCore, SSS_Core, _uiController, uiControllerSO, _directionList);
                 }
             }
             EditorGUILayout.EndVertical();
@@ -688,6 +963,7 @@ namespace AppleteaSystems.StageSyncSystem
 
             // 3. SSS主要コンポーネント・動画プレイヤー・演出コンポーネントを含むオブジェクト（または親・子階層）の保護
             if (obj.GetComponentInChildren<SSSCore>(true) != null || obj.GetComponentInParent<SSSCore>(true) != null) return true;
+            if (obj.GetComponentInChildren<SSSUIController>(true) != null || obj.GetComponentInParent<SSSUIController>(true) != null) return true;
             if (obj.GetComponentInChildren<DirectionController>(true) != null) return true;
             if (obj.GetComponentInChildren<DirectionObject>(true) != null || obj.GetComponentInParent<DirectionObject>(true) != null) return true;
             if (obj.GetComponentInChildren<DirectionSwitch>(true) != null || obj.GetComponentInParent<DirectionSwitch>(true) != null) return true;
@@ -739,7 +1015,7 @@ namespace AppleteaSystems.StageSyncSystem
         }
     }
 
-    // Playモード突入時およびワールドビルド時に自動的にプレイヤー参照・Bridge・演出リストをセットアップ
+    // Playモード突入時およびワールドビルド時に自動的にプレイヤー参照・Bridge・UIController・演出リストをセットアップ
     public class StageSyncSystemBuildProcess : IProcessSceneWithReport
     {
         // YamaPlayerBuildProcess (-10) より前に実行して親子関係変更前にControllerを確実に捕捉する
@@ -768,7 +1044,21 @@ namespace AppleteaSystems.StageSyncSystem
             if (dirController != null)
             {
                 SerializedObject dirControllerSO = new SerializedObject(dirController);
-                StageSyncSystem_Editor.ApplyDirectionOrder(dirController, dirControllerSO, sssCore, sssCoreSO, directions);
+                StageSyncSystem_Editor.SetupUIController(
+                    dirController,
+                    dirControllerSO,
+                    sssCore,
+                    sssCoreSO,
+                    out SSSUIController uiController,
+                    out SerializedObject uiControllerSO);
+                StageSyncSystem_Editor.ApplyDirectionOrder(
+                    dirController,
+                    dirControllerSO,
+                    sssCore,
+                    sssCoreSO,
+                    uiController,
+                    uiControllerSO,
+                    directions);
             }
             else if (directions != null && directions.Count > 0)
             {

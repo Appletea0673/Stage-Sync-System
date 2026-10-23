@@ -1,42 +1,42 @@
-﻿using UnityEngine;
+using UnityEngine;
 using UdonSharp;
-using UnityEngine.UI;
 
 namespace AppleteaSystems.StageSyncSystem
 {
-    //[ExecuteInEditMode]
     [DisallowMultipleComponent]
-    [UdonBehaviourSyncMode(BehaviourSyncMode.Manual)]
+    [UdonBehaviourSyncMode(BehaviourSyncMode.None)]
     public class DirectionController : UdonSharpBehaviour
     {
         [Header("Base")]
         [SerializeField]
         SSSCore SSS_core;
 
-        //Serialize化しつつInspectorから隠す措置
         [SerializeField]
-        Button[] _directionSWs;
+        SSSUIController _uiController;
 
-        public void OnButtonClicked()
+        public SSSCore SSSCore
         {
-            var sender = FindSender();
-            if (sender < 0)
-                return;
-
-            SSS_core.StartHandling(sender);
+            get => SSS_core;
+            set => SSS_core = value;
         }
 
-        int FindSender()
-        {            
-            if (_directionSWs != null)
+        public SSSUIController UIController
+        {
+            get => _uiController;
+            set => _uiController = value;
+        }
+
+        // 既存UIボタンイベントからの互換転送用（実処理はSSSUIControllerへ移行済み）
+        public void OnButtonClicked()
+        {
+            if (_uiController == null)
             {
-                for (int i = 0; i < _directionSWs.Length; i++)
-                {
-                    if (!_directionSWs[i].enabled)
-                        return i;
-                }
+                _uiController = GetComponentInChildren<SSSUIController>(true);
             }
-            return -1;
+            if (_uiController != null)
+            {
+                _uiController.OnButtonClicked();
+            }
         }
     }
 }

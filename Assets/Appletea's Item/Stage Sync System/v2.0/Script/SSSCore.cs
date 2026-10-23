@@ -36,6 +36,9 @@ namespace AppleteaSystems.StageSyncSystem
         [SerializeField, HideInInspector]
         SSSIwaSyncBridge _iwaSyncBridge;
 
+        [SerializeField, HideInInspector]
+        SSSUIController _uiController;
+
         [Header("General Settings")]
         [SerializeField]
         DirectionObject[] _directions;
@@ -109,6 +112,11 @@ namespace AppleteaSystems.StageSyncSystem
         bool _isStageOffsetLocked = false;
         bool _hasPendingLatencyUpdate = false;
 
+        // UI / Force Launch / Fallback Settings
+        bool _ignoreThresholdError = false;
+        bool _ignorePerformerError = false;
+        bool _useFallbackDelay = false;
+
         #region Accessor
 
         public DirectionObject[] Directions
@@ -141,6 +149,12 @@ namespace AppleteaSystems.StageSyncSystem
             set => _iwaSyncBridge = value;
         }
 
+        public SSSUIController UIController
+        {
+            get => _uiController;
+            set => _uiController = value;
+        }
+
         public VideoPlayerType PlayerType
         {
             get => _videoPlayerType;
@@ -148,6 +162,45 @@ namespace AppleteaSystems.StageSyncSystem
         }
 
         public float NetworkDelay => _networkDelay;
+
+        public bool IgnoreThresholdError
+        {
+            get => _ignoreThresholdError;
+            set => _ignoreThresholdError = value;
+        }
+
+        public bool IgnorePerformerError
+        {
+            get => _ignorePerformerError;
+            set => _ignorePerformerError = value;
+        }
+
+        public bool UseFallbackDelay
+        {
+            get => _useFallbackDelay;
+            set
+            {
+                if (_useFallbackDelay == value) return;
+                _useFallbackDelay = value;
+                if (_isStagePlaying && !_isWaitingForReady && _isStageOffsetLocked)
+                {
+                    _hasPendingLatencyUpdate = true;
+                }
+                else
+                {
+                    ApplyOffset();
+                    if (!_useFallbackDelay && HasActivePerformer() && !_isStagePlaying)
+                    {
+                        TriggerBeaconLatencyPing();
+                    }
+                }
+            }
+        }
+
+        public bool IsCurrentlyUsingFallbackDelay()
+        {
+            return _useFallbackDelay || (HasActivePerformer() && _networkDelay <= 0f && _isStagePlaying);
+        }
 
         public GameObject[] PerformerEnableObjects
         {
@@ -374,6 +427,18 @@ namespace AppleteaSystems.StageSyncSystem
             _loadingStartTime = Time.time;
 
             RecordExpectedPlayers();
+            if (_uiController != null)
+            {
+                _uiController.UpdateLoadProgress(
+                    0,
+                    _expectedPlayerIds.Count,
+                    0,
+                    ErrorAbortThreshold,
+                    _performerPlayerIds.Count > 0,
+                    false,
+                    false
+                );
+            }
             RequestSerialization();
 
             SendCustomNetworkEvent(NetworkEventTarget.All, nameof(NetOnBeginLoading), _playbackSessionId, objectIndex);
@@ -699,6 +764,8 @@ namespace AppleteaSystems.StageSyncSystem
             int totalExpected = 0;
             int readyCount = 0;
             int failedCount = 0;
+            int totalPerformers = 0;
+            int readyPerformers = 0;
             bool performerFailed = false;
 
             int count = VRCPlayerApi.GetPlayerCount();
@@ -720,15 +787,25 @@ namespace AppleteaSystems.StageSyncSystem
                     totalExpected++;
                     bool isReady = _readyPlayerIds.Contains(pid);
                     bool isFailed = _failedPlayerIds.Contains(pid) || (isTimeout && !isReady);
+                    bool isPerf = _performerPlayerIds.Contains(pid);
+
+                    if (isPerf)
+                    {
+                        totalPerformers++;
+                    }
 
                     if (isReady)
                     {
                         readyCount++;
+                        if (isPerf)
+                        {
+                            readyPerformers++;
+                        }
                     }
                     else if (isFailed)
                     {
                         failedCount++;
-                        if (_performerPlayerIds.Contains(pid))
+                        if (isPerf)
                         {
                             performerFailed = true;
                         }
@@ -736,20 +813,37 @@ namespace AppleteaSystems.StageSyncSystem
                 }
             }
 
-            // 1. 演者が1人でも読み込み失敗（またはタイムアウト未完了）している場合は割合に関係なく再生中止
-            if (performerFailed)
+            if (_uiController != null)
             {
+                bool hasPerformer = totalPerformers > 0;
+                bool allPerformersReady = hasPerformer && readyPerformers >= totalPerformers && !performerFailed;
+                _uiController.UpdateLoadProgress(
+                    readyCount,
+                    totalExpected,
+                    failedCount,
+                    ErrorAbortThreshold,
+                    hasPerformer,
+                    allPerformersReady,
+                    performerFailed
+                );
+            }
+
+            // 1. 演者が1人でも読み込み失敗（またはタイムアウト未完了）している場合は割合に関係なく再生中止（Force Launchで無効化されていない場合）
+            if (performerFailed && !_ignorePerformerError)
+            {
+                if (_uiController != null) _uiController.ConsumeForceLaunchIfOnce();
                 AbortSynchronizedStagePlayback();
                 return;
             }
 
-            // 2. 失敗（またはタイムアウト未完了）したプレイヤーの割合が閾値（デフォルト50%）以上の場合は再生中止
-            if (totalExpected > 0 && failedCount > 0)
+            // 2. 失敗（またはタイムアウト未完了）したプレイヤーの割合が閾値（デフォルト50%）以上の場合は再生中止（Force Launchで無効化されていない場合）
+            if (totalExpected > 0 && failedCount > 0 && !_ignoreThresholdError)
             {
                 float failureRate = (float)failedCount / totalExpected;
                 float thresholdRatio = Mathf.Clamp01(ErrorAbortThreshold / 100f);
                 if (failureRate >= thresholdRatio)
                 {
+                    if (_uiController != null) _uiController.ConsumeForceLaunchIfOnce();
                     AbortSynchronizedStagePlayback();
                     return;
                 }
@@ -758,6 +852,7 @@ namespace AppleteaSystems.StageSyncSystem
             // 3. 全員の応答が揃った場合、またはタイムアウト時点で中止条件に該当しなかった場合は再生開始
             if (isTimeout || (readyCount + failedCount >= totalExpected))
             {
+                if (_uiController != null) _uiController.ConsumeForceLaunchIfOnce();
                 BeginSynchronizedStagePlayback();
             }
         }
@@ -882,7 +977,7 @@ namespace AppleteaSystems.StageSyncSystem
         public void RequestLatencyUpdate()
         {
             if (!Utilities.IsValid(Networking.LocalPlayer)) return;
-            if (!HasActivePerformer()) return;
+            if (!HasActivePerformer() || _useFallbackDelay) return;
             SendCustomNetworkEvent(NetworkEventTarget.All, nameof(NetRequestBeaconPings));
             SendLatencyPing();
         }
@@ -896,7 +991,7 @@ namespace AppleteaSystems.StageSyncSystem
         private void TriggerBeaconLatencyPing()
         {
             if (!Utilities.IsValid(Networking.LocalPlayer)) return;
-            if (!HasActivePerformer()) return;
+            if (!HasActivePerformer() || _useFallbackDelay) return;
             int beaconOrder = GetLocalBeaconIndex();
             if (beaconOrder >= 0 && beaconOrder < 3)
             {
@@ -1068,6 +1163,11 @@ namespace AppleteaSystems.StageSyncSystem
                     }
                 }
             }
+
+            if (_uiController != null)
+            {
+                _uiController.RefreshDelayStatusUI();
+            }
         }
 
         private void OnStagePlaybackEnded()
@@ -1103,6 +1203,15 @@ namespace AppleteaSystems.StageSyncSystem
             {
                 _iwaSyncBridge.SSSCore = this;
                 if (Iwasync_core != null) _iwaSyncBridge.IwasyncCore = Iwasync_core;
+            }
+
+            if (_uiController == null && transform.parent != null)
+            {
+                _uiController = transform.parent.GetComponentInChildren<SSSUIController>(true);
+            }
+            if (_uiController != null)
+            {
+                _uiController.SSSCore = this;
             }
         }
 
@@ -1164,6 +1273,7 @@ namespace AppleteaSystems.StageSyncSystem
             // 2. SSSの主要コンポーネントおよび動画プレイヤーを含むオブジェクト（またはその親階層）の保護
             if (obj.GetComponentInChildren<SSSCore>(true) != null) return true;
             if (obj.GetComponentInChildren<DirectionController>(true) != null) return true;
+            if (obj.GetComponentInChildren<SSSUIController>(true) != null) return true;
             if (obj.GetComponentInChildren<DirectionObject>(true) != null) return true;
             if (obj.GetComponentInChildren<DirectionSwitch>(true) != null) return true;
             if (obj.GetComponentInChildren<PerformerChecker>(true) != null) return true;
@@ -1436,13 +1546,17 @@ namespace AppleteaSystems.StageSyncSystem
 
         // Danceモード相当のオフセット計算 (秒単位)
         // 演者が不在の場合: 全員 0秒 (遅延計測・オフセット補正を省略)
-        // 演者: +NetworkDelay (2人以下等でNetworkDelay未計測時は AudienceDelays をフォールバック使用)
-        // 観客: -NetworkDelay
+        // Forced Fallback 有効時: 演者 +AudienceDelays / 観客 0秒 (定数フォールバック)
+        // Default 時: 演者 +NetworkDelay (未計測時は AudienceDelays) / 観客 -NetworkDelay
         private float GetOffsetSeconds()
         {
             if (!HasActivePerformer())
             {
                 return 0f;
+            }
+            if (_useFallbackDelay)
+            {
+                return _isPerformer ? (AudienceDelays / 1000f) : 0f;
             }
             if (_isPerformer)
             {
