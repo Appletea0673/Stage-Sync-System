@@ -2648,7 +2648,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 2fafe2cfe61f6974895a912c3755e8f1, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  m_AllowSwitchOff: 1
+  m_AllowSwitchOff: 0
 --- !u!114 &3070292876827484013
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -3328,7 +3328,7 @@ RectTransform:
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
   m_AnchorMin: {x: 0, y: 1}
   m_AnchorMax: {x: 0, y: 1}
-  m_AnchoredPosition: {x: 440.0001, y: -208.15}
+  m_AnchoredPosition: {x: 440, y: -208.15}
   m_SizeDelta: {x: 880, y: 196.29999}
   m_Pivot: {x: 0.5, y: 0.5}
 --- !u!114 &8553106093202465411
@@ -3369,7 +3369,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 2fafe2cfe61f6974895a912c3755e8f1, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  m_AllowSwitchOff: 1
+  m_AllowSwitchOff: 0
 --- !u!1 &2624997586909217541
 GameObject:
   m_ObjectHideFlags: 0
@@ -4766,7 +4766,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 2fafe2cfe61f6974895a912c3755e8f1, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  m_AllowSwitchOff: 1
+  m_AllowSwitchOff: 0
 --- !u!114 &5961530709795926135
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -4906,7 +4906,7 @@ RectTransform:
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
   m_AnchorMin: {x: 0, y: 1}
   m_AnchorMax: {x: 0, y: 1}
-  m_AnchoredPosition: {x: 169.03336, y: -20.000015}
+  m_AnchoredPosition: {x: 169.03336, y: -20}
   m_SizeDelta: {x: 190, y: 31}
   m_Pivot: {x: 0.5, y: 0.5}
 --- !u!222 &240555489766563193
@@ -6564,7 +6564,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 2fafe2cfe61f6974895a912c3755e8f1, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  m_AllowSwitchOff: 1
+  m_AllowSwitchOff: 0
 --- !u!1 &4446261424027028129
 GameObject:
   m_ObjectHideFlags: 0
@@ -7250,7 +7250,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 2fafe2cfe61f6974895a912c3755e8f1, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  m_AllowSwitchOff: 1
+  m_AllowSwitchOff: 0
 --- !u!114 &498770260288293436
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -8713,7 +8713,7 @@ MonoBehaviour:
   m_Interactable: 1
   m_TargetGraphic: {fileID: 3198881984426913811}
   toggleTransition: 1
-  graphic: {fileID: 6078168689741234172}
+  graphic: {fileID: 3009115966513411963}
   m_Group: {fileID: 6969728602584344482}
   onValueChanged:
     m_PersistentCalls:
@@ -9889,7 +9889,7 @@ MonoBehaviour:
   m_Interactable: 1
   m_TargetGraphic: {fileID: 1683374355432218425}
   toggleTransition: 1
-  graphic: {fileID: 3009115966513411963}
+  graphic: {fileID: 6078168689741234172}
   m_Group: {fileID: 6969728602584344482}
   onValueChanged:
     m_PersistentCalls:
