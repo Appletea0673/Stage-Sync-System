@@ -14,6 +14,7 @@ namespace AppleteaSystems.StageSyncSystem
         Canvas _targetCanvas;
 
         BoxCollider _operatorCollider;
+        SSSUIController _uiController;
         Collider[] _canvasColliders;
         Button[] _buttons;
         Scrollbar[] _scrollbars;
@@ -68,6 +69,11 @@ namespace AppleteaSystems.StageSyncSystem
         private void CacheUIComponents()
         {
             if (_targetCanvas == null) return;
+
+            if (_uiController == null && transform.root != null)
+            {
+                _uiController = transform.root.GetComponentInChildren<SSSUIController>(true);
+            }
 
             _canvasColliders = _targetCanvas.GetComponentsInChildren<Collider>(true);
             _buttons = _targetCanvas.GetComponentsInChildren<Button>(true);
@@ -142,6 +148,12 @@ namespace AppleteaSystems.StageSyncSystem
                 {
                     if (_toggles[i] != null) _toggles[i].interactable = canOperate;
                 }
+            }
+
+            // 3. SSSUIController側の条件付きToggle操作制限（有効期間フォームのグレーアウト・上演中ロック）を再適用
+            if (_uiController != null)
+            {
+                _uiController.SetOperatorInteractable(canOperate);
             }
         }
     }

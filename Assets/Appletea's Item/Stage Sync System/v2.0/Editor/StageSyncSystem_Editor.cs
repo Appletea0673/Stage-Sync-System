@@ -529,9 +529,16 @@ namespace AppleteaSystems.StageSyncSystem
                 ConfigureToggleForUdon(uiSO.FindProperty("_ignoreThresholdToggle")?.objectReferenceValue as Toggle, uiUdon, "OnForceLaunchToggleChanged", clearGroup: true);
                 ConfigureToggleForUdon(uiSO.FindProperty("_ignorePerformerErrorToggle")?.objectReferenceValue as Toggle, uiUdon, "OnForceLaunchToggleChanged", clearGroup: true);
 
-                // 有効期間ラジオボタンは初期状態（Force Launch両方OFF）では操作無効化
-                ConfigureToggleForUdon(uiSO.FindProperty("_durationOnceToggle")?.objectReferenceValue as Toggle, uiUdon, "OnForceLaunchDurationToggleChanged", clearGroup: false, interactable: false);
-                ConfigureToggleForUdon(uiSO.FindProperty("_durationAlwaysToggle")?.objectReferenceValue as Toggle, uiUdon, "OnForceLaunchDurationToggleChanged", clearGroup: false, interactable: false);
+                // 有効期間ラジオボタンは初期状態（Force Launch両方OFF）では Toggle.interactable のみ操作無効化（フォーム自体は常に表示）
+                bool anyForceLaunchOn = (ignoreThresholdToggle != null && ignoreThresholdToggle.isOn) || (ignorePerformerToggle != null && ignorePerformerToggle.isOn);
+                ConfigureToggleForUdon(uiSO.FindProperty("_durationOnceToggle")?.objectReferenceValue as Toggle, uiUdon, "OnForceLaunchDurationToggleChanged", clearGroup: false, interactable: anyForceLaunchOn);
+                ConfigureToggleForUdon(uiSO.FindProperty("_durationAlwaysToggle")?.objectReferenceValue as Toggle, uiUdon, "OnForceLaunchDurationToggleChanged", clearGroup: false, interactable: anyForceLaunchOn);
+                GameObject durationFormGO = uiSO.FindProperty("_forceLaunchDurationForm")?.objectReferenceValue as GameObject;
+                if (durationFormGO != null && !durationFormGO.activeSelf)
+                {
+                    durationFormGO.SetActive(true);
+                    EditorUtility.SetDirty(durationFormGO);
+                }
 
                 ConfigureToggleForUdon(uiSO.FindProperty("_delayDefaultToggle")?.objectReferenceValue as Toggle, uiUdon, "OnDelayCalculationToggleChanged");
                 ConfigureToggleForUdon(uiSO.FindProperty("_delayFallbackToggle")?.objectReferenceValue as Toggle, uiUdon, "OnDelayCalculationToggleChanged");

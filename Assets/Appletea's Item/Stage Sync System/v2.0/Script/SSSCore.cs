@@ -4,6 +4,7 @@ using UnityEngine.Playables;
 using VRC.SDKBase;
 using VRC.SDK3.Data;
 using VRC.SDK3.Components.Video;
+using VRC.SDK3.Video.Components.Base;
 using VRC.SDK3.UdonNetworkCalling;
 using VRC.Udon.Common.Interfaces;
 using Yamadev.YamaStream;
@@ -91,13 +92,19 @@ namespace AppleteaSystems.StageSyncSystem
         // Local Variables
         bool _isPerformer = false;
         const uint _MODE_VIDEO = 0x00000010;
+        const float _VRC_VIDEO_LOAD_COOLDOWN = 5.25f;
         float _volumeTemp = 0.5f;
         bool _isMutedBySSS = false;
         int _activeDirectionIndex = -1;
+        int _localLoadingSessionId = -1;
         int _localReadySessionId = -1;
         int _localErrorSessionId = -1;
         int _localStartedSessionId = -1;
         float _loadingStartTime = 0f;
+        float _lastVideoPlayUrlTime = -10f;
+        int _pendingLoadSessionId = -1;
+        bool _isWaitingForCooldownLoad = false;
+        bool _isInternalVideoStop = false;
 
         // Ready & Error Tracking (Owner / All)
         DataList _expectedPlayerIds = new DataList();
@@ -162,17 +169,34 @@ namespace AppleteaSystems.StageSyncSystem
         }
 
         public float NetworkDelay => _networkDelay;
+        public bool IsWaitingForReady => _isWaitingForReady;
+        public bool IsStagePlaying => _isStagePlaying;
+        public bool IsLoadingOrPlaying => _isWaitingForReady || _isStagePlaying;
+
+        public void ApplyForceLaunchSettingsFromUI(bool ignoreThreshold, bool ignorePerformer)
+        {
+            _ignoreThresholdError = ignoreThreshold;
+            _ignorePerformerError = ignorePerformer;
+        }
 
         public bool IgnoreThresholdError
         {
             get => _ignoreThresholdError;
-            set => _ignoreThresholdError = value;
+            set
+            {
+                if (IsLoadingOrPlaying || _ignoreThresholdError == value) return;
+                _ignoreThresholdError = value;
+            }
         }
 
         public bool IgnorePerformerError
         {
             get => _ignorePerformerError;
-            set => _ignorePerformerError = value;
+            set
+            {
+                if (IsLoadingOrPlaying || _ignorePerformerError == value) return;
+                _ignorePerformerError = value;
+            }
         }
 
         public bool UseFallbackDelay
@@ -180,26 +204,30 @@ namespace AppleteaSystems.StageSyncSystem
             get => _useFallbackDelay;
             set
             {
-                if (_useFallbackDelay == value) return;
+                if (IsLoadingOrPlaying || _useFallbackDelay == value) return;
                 _useFallbackDelay = value;
-                if (_isStagePlaying && !_isWaitingForReady && _isStageOffsetLocked)
+                ApplyOffset();
+                if (!_useFallbackDelay && HasActivePerformer())
                 {
-                    _hasPendingLatencyUpdate = true;
+                    TriggerBeaconLatencyPing();
                 }
-                else
+
+                if (_uiController != null)
                 {
-                    ApplyOffset();
-                    if (!_useFallbackDelay && HasActivePerformer() && !_isStagePlaying)
-                    {
-                        TriggerBeaconLatencyPing();
-                    }
+                    _uiController.RefreshDelayStatusUI();
                 }
             }
         }
 
         public bool IsCurrentlyUsingFallbackDelay()
         {
-            return _useFallbackDelay || (HasActivePerformer() && _networkDelay <= 0f && _isStagePlaying);
+            if (_useFallbackDelay) return true;
+            int playerCount = VRCPlayerApi.GetPlayerCount();
+            // インスタンス人数が1〜2人の場合は三角測量による遅延計算が不可能なため常にFallback表記
+            if (playerCount < 3) return true;
+            // 上演開始時点で演者がいるにもかかわらず遅延計測値が未取得の場合もFallback表記
+            if (_isStagePlaying && HasActivePerformer() && _networkDelay <= 0f) return true;
+            return false;
         }
 
         public GameObject[] PerformerEnableObjects
@@ -253,6 +281,11 @@ namespace AppleteaSystems.StageSyncSystem
                     dir.playableDirector.playOnAwake = true;
                 }
             }
+
+            if (_uiController != null)
+            {
+                _uiController.RefreshDelayStatusUI();
+            }
         }
 
         public override void OnPlayerJoined(VRCPlayerApi player)
@@ -293,6 +326,11 @@ namespace AppleteaSystems.StageSyncSystem
                 ApplyOffset();
                 SendCustomEventDelayedSeconds(nameof(RequestLatencyUpdate), 1.5f);
             }
+
+            if (_uiController != null)
+            {
+                _uiController.RefreshDelayStatusUI();
+            }
         }
 
         public override void OnPlayerLeft(VRCPlayerApi player)
@@ -308,16 +346,22 @@ namespace AppleteaSystems.StageSyncSystem
                 RemoveFromList(_failedPlayerIds, leftId);
             }
 
-            if (hadPerformer != HasActivePerformer())
+            if (_isStagePlaying && !_isWaitingForReady && _isStageOffsetLocked)
             {
-                if (_isStagePlaying && !_isWaitingForReady && _isStageOffsetLocked)
-                {
-                    _hasPendingLatencyUpdate = true;
-                }
-                else
+                _hasPendingLatencyUpdate = true;
+            }
+            else
+            {
+                UpdateNetworkDelay();
+                if (hadPerformer != HasActivePerformer())
                 {
                     ApplyOffset();
                 }
+            }
+
+            if (_uiController != null)
+            {
+                _uiController.RefreshDelayStatusUI();
             }
 
             if (Networking.IsOwner(gameObject) && _isWaitingForReady)
@@ -332,9 +376,11 @@ namespace AppleteaSystems.StageSyncSystem
             {
                 MuteVideoPlayerForLoading();
                 StopAllDirections();
+                if (_uiController != null) _uiController.SetSettingsLocked(true);
             }
             else if (_isStagePlaying)
             {
+                if (_uiController != null) _uiController.SetSettingsLocked(true);
                 RestoreVideoPlayerVolume();
                 // 既に現在のセッションを再生中の既存プレイヤーは、途中参加者入室時のシリアライズで再同期しないように保護
                 if (_localStartedSessionId != _playbackSessionId)
@@ -349,8 +395,16 @@ namespace AppleteaSystems.StageSyncSystem
             }
             else
             {
+                _isWaitingForCooldownLoad = false;
+                _pendingLoadSessionId = -1;
                 RestoreVideoPlayerVolume();
                 StopAllDirections();
+                if (_uiController != null) _uiController.SetSettingsLocked(false);
+            }
+
+            if (_uiController != null)
+            {
+                _uiController.RefreshDelayStatusUI();
             }
         }
 
@@ -360,9 +414,22 @@ namespace AppleteaSystems.StageSyncSystem
 
             if (_isWaitingForReady)
             {
-                if (IsVideoPlayerPlaying() && !IsVideoPlayerPaused())
+                if (_isWaitingForCooldownLoad)
                 {
-                    PauseLocalVideoPlayerAtZero();
+                    return;
+                }
+
+                if (IsVideoPlayerPlaying() && IsCurrentDirectionTrackLoaded())
+                {
+                    MuteVideoPlayerForLoading();
+                    if (!IsVideoPlayerPaused())
+                    {
+                        PauseLocalVideoPlayerAtZero();
+                    }
+                    if (_localReadySessionId != _playbackSessionId)
+                    {
+                        ReportLocalPlayerReady();
+                    }
                 }
 
                 if (Networking.IsOwner(gameObject) && Time.time - _loadingStartTime >= ReadyTimeout)
@@ -414,17 +481,22 @@ namespace AppleteaSystems.StageSyncSystem
             // 起動させた人物がOwnerを取得
             TakeOwnership();
 
+            // 読み込み開始時点でUI側の設定変数を確定させてロック
+            if (_uiController != null)
+            {
+                _ignoreThresholdError = _uiController.IgnoreThresholdError;
+                _ignorePerformerError = _uiController.IgnorePerformerError;
+                _useFallbackDelay = _uiController.UseFallbackDelay;
+                _uiController.SetSettingsLocked(true);
+            }
+
             if (Utilities.IsValid(Networking.LocalPlayer))
             {
                 UpdatePerformerIdList(Networking.LocalPlayer.playerId, _isPerformer);
             }
 
             _playbackSessionId++;
-            PlayingObjectIndex = objectIndex;
-            _isWaitingForReady = true;
-            _isStagePlaying = false;
-            _stageStartServerTime = 0;
-            _loadingStartTime = Time.time;
+            InitializeLoadingSessionLocal(_playbackSessionId, objectIndex);
 
             RecordExpectedPlayers();
             if (_uiController != null)
@@ -443,17 +515,15 @@ namespace AppleteaSystems.StageSyncSystem
 
             SendCustomNetworkEvent(NetworkEventTarget.All, nameof(NetOnBeginLoading), _playbackSessionId, objectIndex);
 
-            // 動画ロード開始（一時停止状態で待機）
-            LoadVideoOnPlayer(objectIndex);
-
-            // タイムアウト監視を開始
-            SendCustomEventDelayedSeconds(nameof(CheckReadyTimeout), ReadyTimeout);
+            // VRChatの5秒URLレートリミットおよび先行URL解決との競合を回避して動画ロードを開始
+            RequestVideoLoadForSession(_playbackSessionId, objectIndex, true);
         }
 
         public override void OnVideoReady()
         {
             if (_isWaitingForReady)
             {
+                if (_isWaitingForCooldownLoad || !IsCurrentDirectionTrackLoaded()) return;
                 MuteVideoPlayerForLoading();
                 PauseLocalVideoPlayerAtZero();
                 ReportLocalPlayerReady();
@@ -464,6 +534,12 @@ namespace AppleteaSystems.StageSyncSystem
         {
             if (_isWaitingForReady)
             {
+                if (_isWaitingForCooldownLoad || !IsCurrentDirectionTrackLoaded())
+                {
+                    // 直前に押した別演出の非同期URL解決が遅れて完了した場合は即座に停止して破棄する
+                    StopLocalVideoPlayer();
+                    return;
+                }
                 MuteVideoPlayerForLoading();
                 PauseLocalVideoPlayerAtZero();
                 ReportLocalPlayerReady();
@@ -473,7 +549,9 @@ namespace AppleteaSystems.StageSyncSystem
             if (_isStagePlaying)
             {
                 RestoreVideoPlayerVolume();
+                ResumeLocalVideoPlayer();
                 ApplyOffset();
+                SeekLocalVideoToCurrentStageTime();
                 SyncActiveDirection(true);
                 SendCustomEventDelayedSeconds(nameof(DelayedForceSync), 1.0f);
             }
@@ -513,10 +591,18 @@ namespace AppleteaSystems.StageSyncSystem
 
         public void OnVideoStop()
         {
-            // ロード開始直後の既存トラック停止イベントでは待機状態を解除しない
-            if (_isWaitingForReady && Time.time - _loadingStartTime < 1.0f)
+            if (_isInternalVideoStop) return;
+
+            // ロード待機中の内部トラック切り替え・DeserializationによるStopイベントでは待機状態を解除しない
+            if (_isWaitingForReady)
             {
                 StopAllDirections();
+                return;
+            }
+
+            // 上演中に非Owner等のリトライやトラック再同期で一時的にStopが呼ばれた場合、動画プレイヤーが停止状態でなければ維持
+            if (_isStagePlaying && IsUsingYamaPlayer() && !YamaPlayer_controller.Stopped)
+            {
                 return;
             }
 
@@ -561,9 +647,23 @@ namespace AppleteaSystems.StageSyncSystem
 
         public override void OnVideoError(VideoError videoError)
         {
-            // 読み込みエラー発生時は失敗ステータスと演者フラグをOwnerへ通知する
+            // 読み込みエラー発生時は失敗ステータスと演者フラグを通知する
             if (_isWaitingForReady)
             {
+                if (_isWaitingForCooldownLoad || !IsCurrentDirectionTrackLoaded()) return;
+
+                // VRChatの5秒URLレートリミット(RateLimited)発生時は、YamaPlayer内部の重複ErrorRetryを解除して
+                // SSSCore側のクールダウン管理下で5.25秒後に確実に単一リトライを実行する
+                if (videoError == VideoError.RateLimited && (Time.time - _loadingStartTime + _VRC_VIDEO_LOAD_COOLDOWN < ReadyTimeout))
+                {
+                    StopLocalVideoPlayer();
+                    _lastVideoPlayUrlTime = Time.time;
+                    _isWaitingForCooldownLoad = true;
+                    _pendingLoadSessionId = _playbackSessionId;
+                    SendCustomEventDelayedSeconds(nameof(ProcessPendingVideoLoad), _VRC_VIDEO_LOAD_COOLDOWN);
+                    return;
+                }
+
                 ReportLocalPlayerError();
             }
         }
@@ -636,6 +736,18 @@ namespace AppleteaSystems.StageSyncSystem
                 {
                     ApplyOffset();
                 }
+
+                if (_uiController != null)
+                {
+                    if (!_isWaitingForReady && !_isStagePlaying)
+                    {
+                        _uiController.UpdateStandbyPerformerStatus(hasPerformer);
+                    }
+                    else
+                    {
+                        _uiController.RefreshDelayStatusUI();
+                    }
+                }
             }
         }
 
@@ -648,13 +760,14 @@ namespace AppleteaSystems.StageSyncSystem
             }
         }
 
-        [NetworkCallable(100)]
-        public void NetOnBeginLoading(int sessionId, int objectIndex)
+        private void InitializeLoadingSessionLocal(int sessionId, int objectIndex)
         {
+            _localLoadingSessionId = sessionId;
             _playbackSessionId = sessionId;
             _playingObjectIndex = objectIndex;
             _isWaitingForReady = true;
             _isStagePlaying = false;
+            _stageStartServerTime = 0;
             _localReadySessionId = -1;
             _localErrorSessionId = -1;
             _localStartedSessionId = -1;
@@ -662,18 +775,146 @@ namespace AppleteaSystems.StageSyncSystem
             _hasPendingLatencyUpdate = false;
             _loadingStartTime = Time.time;
 
+            if (_uiController != null)
+            {
+                _uiController.SetSettingsLocked(true);
+            }
+
+            MuteVideoPlayerForLoading();
+            StopAllDirections();
+        }
+
+        private void RequestVideoLoadForSession(int sessionId, int objectIndex, bool isOwnerLoad)
+        {
+            // 既存の再生や先行クリックのYamaPlayer内部状態・_retryTargetUrlを即座にクリーン停止する
+            StopLocalVideoPlayer();
+
+            float elapsed = Time.time - _lastVideoPlayUrlTime;
+            if (elapsed >= _VRC_VIDEO_LOAD_COOLDOWN)
+            {
+                _isWaitingForCooldownLoad = false;
+                _pendingLoadSessionId = -1;
+                ExecuteVideoLoadNow(sessionId, objectIndex, isOwnerLoad);
+            }
+            else
+            {
+                // 直前のURLロードから5.25秒未満の連打・切り替え時は、RateLimitedおよび先行yt-dlp解決との競合を防ぐため
+                // クールダウン経過後に最新セッションのURLのみを単一ロードする
+                _isWaitingForCooldownLoad = true;
+                _pendingLoadSessionId = sessionId;
+                float waitSeconds = (_VRC_VIDEO_LOAD_COOLDOWN - elapsed) + 0.05f;
+                _loadingStartTime = Time.time + waitSeconds;
+                SendCustomEventDelayedSeconds(nameof(ProcessPendingVideoLoad), waitSeconds);
+                if (isOwnerLoad)
+                {
+                    SendCustomEventDelayedSeconds(nameof(CheckReadyTimeout), waitSeconds + ReadyTimeout);
+                }
+            }
+        }
+
+        public void ProcessPendingVideoLoad()
+        {
+            if (!_isWaitingForReady || !_isWaitingForCooldownLoad) return;
+            if (_pendingLoadSessionId != _playbackSessionId) return;
+
+            float elapsed = Time.time - _lastVideoPlayUrlTime;
+            if (elapsed < _VRC_VIDEO_LOAD_COOLDOWN - 0.05f)
+            {
+                float remaining = (_VRC_VIDEO_LOAD_COOLDOWN - elapsed) + 0.05f;
+                SendCustomEventDelayedSeconds(nameof(ProcessPendingVideoLoad), remaining);
+                return;
+            }
+
+            _isWaitingForCooldownLoad = false;
+            _pendingLoadSessionId = -1;
+            ExecuteVideoLoadNow(_playbackSessionId, _playingObjectIndex, Networking.IsOwner(gameObject));
+        }
+
+        private void ExecuteVideoLoadNow(int sessionId, int objectIndex, bool isOwnerLoad)
+        {
+            if (!_isWaitingForReady || sessionId != _playbackSessionId) return;
+            if (_directions == null || objectIndex < 0 || objectIndex >= _directions.Length) return;
+            DirectionObject dir = _directions[objectIndex];
+            if (dir == null) return;
+
+            // クールダウン待機中に先行クリックのURL解決が完了してAVProがOpen処理に入っていた場合も確実に閉じてから新URLをロードする
+            StopLocalVideoPlayer();
+
+            _lastVideoPlayUrlTime = Time.time;
+            _loadingStartTime = Time.time;
+
+            if (isOwnerLoad)
+            {
+                LoadVideoOnPlayer(objectIndex);
+                SendCustomEventDelayedSeconds(nameof(CheckReadyTimeout), ReadyTimeout);
+            }
+            else
+            {
+                if (IsUsingYamaPlayer())
+                {
+                    bool recentlyLoadedSameTrack = IsCurrentDirectionTrackLoaded() && (Time.time - YamaPlayer_controller.LastLoaded <= 1.5f);
+                    if (!recentlyLoadedSameTrack)
+                    {
+                        YamaPlayer_controller.OnVideoPause();
+                        Track track = Track.New(
+                            YamaPlayer_controller.VideoPlayerType,
+                            dir.directionName,
+                            dir.videoURL
+                        );
+                        YamaPlayer_controller.PlayTrack(track);
+                    }
+                    else if (IsVideoPlayerPlaying())
+                    {
+                        MuteVideoPlayerForLoading();
+                        PauseLocalVideoPlayerAtZero();
+                        ReportLocalPlayerReady();
+                    }
+                }
+                else if (IsUsingIwaSync())
+                {
+                    if (IsCurrentDirectionTrackLoaded() && IsVideoPlayerPlaying())
+                    {
+                        MuteVideoPlayerForLoading();
+                        PauseLocalVideoPlayerAtZero();
+                        ReportLocalPlayerReady();
+                    }
+                }
+            }
+        }
+
+        [NetworkCallable(100)]
+        public void NetOnBeginLoading(int sessionId, int objectIndex)
+        {
+            // 連打時に古いセッションの遅延イベントが後から到着した場合は無視する
+            if (sessionId < _playbackSessionId) return;
+
+            // Owner自身は StartHandling 内で同期的に初期化済みのため、ネットワークループバックによるリセットを防止
+            bool alreadyInitializedOnLocal = (_localLoadingSessionId == sessionId);
+            if (!alreadyInitializedOnLocal)
+            {
+                InitializeLoadingSessionLocal(sessionId, objectIndex);
+                RecordExpectedPlayers();
+            }
+
             if (_isPerformer)
             {
                 SyncLocalPerformerState();
             }
 
-            MuteVideoPlayerForLoading();
-            StopAllDirections();
+            if (!Networking.IsOwner(gameObject) && !alreadyInitializedOnLocal)
+            {
+                RequestVideoLoadForSession(sessionId, objectIndex, false);
+            }
 
             // 演者が存在する場合のみ動画ロード時間を利用してインスタンス内の通信遅延を計測
             if (HasActivePerformer())
             {
                 TriggerBeaconLatencyPing();
+            }
+
+            if (_uiController != null)
+            {
+                _uiController.RefreshDelayStatusUI();
             }
         }
 
@@ -684,7 +925,7 @@ namespace AppleteaSystems.StageSyncSystem
 
             int localId = Utilities.IsValid(Networking.LocalPlayer) ? Networking.LocalPlayer.playerId : 1;
             SendCustomNetworkEvent(
-                NetworkEventTarget.Owner,
+                NetworkEventTarget.All,
                 nameof(NetNotifyPlayerLoadStatus),
                 _playbackSessionId,
                 localId,
@@ -701,7 +942,7 @@ namespace AppleteaSystems.StageSyncSystem
 
             int localId = Utilities.IsValid(Networking.LocalPlayer) ? Networking.LocalPlayer.playerId : 1;
             SendCustomNetworkEvent(
-                NetworkEventTarget.Owner,
+                NetworkEventTarget.All,
                 nameof(NetNotifyPlayerLoadStatus),
                 _playbackSessionId,
                 localId,
@@ -713,10 +954,9 @@ namespace AppleteaSystems.StageSyncSystem
         [NetworkCallable(100)]
         public void NetNotifyPlayerLoadStatus(int sessionId, int playerId, bool isSuccess, bool isPerformer)
         {
-            if (!Networking.IsOwner(gameObject)) return;
-            if (!_isWaitingForReady || sessionId != _playbackSessionId) return;
-
             UpdatePerformerIdList(playerId, isPerformer);
+
+            if (!_isWaitingForReady || sessionId != _playbackSessionId) return;
 
             if (isSuccess)
             {
@@ -734,7 +974,10 @@ namespace AppleteaSystems.StageSyncSystem
                 }
             }
 
-            EvaluatePlayersLoadState(false);
+            if (Networking.IsOwner(gameObject))
+            {
+                EvaluatePlayersLoadState(false);
+            }
         }
 
         private void RecordExpectedPlayers()
@@ -877,14 +1120,24 @@ namespace AppleteaSystems.StageSyncSystem
 
             if (IsUsingYamaPlayer())
             {
-                if (!Networking.IsOwner(YamaPlayer_controller.gameObject))
+                // Owner自身が読み込み失敗している状態で RequestSerialization を呼ぶと _stopped = true が全員へ送信され、
+                // 読み込み完了していた他プレイヤーの動画まで停止してしまうため、Ownerが読み込み完了している場合のみシリアライズする
+                if (!YamaPlayer_controller.Stopped)
                 {
-                    Networking.SetOwner(Networking.LocalPlayer, YamaPlayer_controller.gameObject);
+                    if (!Networking.IsOwner(YamaPlayer_controller.gameObject))
+                    {
+                        Networking.SetOwner(Networking.LocalPlayer, YamaPlayer_controller.gameObject);
+                    }
+                    YamaPlayer_controller.SetTime(0f);
+                    YamaPlayer_controller.Paused = false;
+                    YamaPlayer_controller.SyncTime = 0f;
+                    YamaPlayer_controller.RequestSerialization();
                 }
-                YamaPlayer_controller.SetTime(0f);
-                YamaPlayer_controller.Paused = false;
-                YamaPlayer_controller.SyncTime = 0f;
-                YamaPlayer_controller.RequestSerialization();
+                else
+                {
+                    // Owner自身がリトライ待ちの場合は RequestSerialization を発火させずにローカルの _paused のみ解除しておく
+                    YamaPlayer_controller.OnVideoPlay();
+                }
             }
             else if (IsUsingIwaSync())
             {
@@ -893,6 +1146,11 @@ namespace AppleteaSystems.StageSyncSystem
                 Iwasync_core.time = 0f;
                 Iwasync_core.Play();
                 Iwasync_core.RequestSerialization();
+            }
+
+            if (_uiController != null)
+            {
+                _uiController.RefreshDelayStatusUI();
             }
 
             SendCustomNetworkEvent(
@@ -910,11 +1168,18 @@ namespace AppleteaSystems.StageSyncSystem
 
             _isWaitingForReady = false;
             _isStagePlaying = false;
+            _isWaitingForCooldownLoad = false;
+            _pendingLoadSessionId = -1;
             _playingObjectIndex = -1;
             _stageStartServerTime = 0;
             RequestSerialization();
 
             StopVideoOnPlayer();
+
+            if (_uiController != null)
+            {
+                _uiController.SetSettingsLocked(false);
+            }
 
             SendCustomNetworkEvent(
                 NetworkEventTarget.All,
@@ -930,6 +1195,8 @@ namespace AppleteaSystems.StageSyncSystem
 
             _isWaitingForReady = false;
             _isStagePlaying = false;
+            _isWaitingForCooldownLoad = false;
+            _pendingLoadSessionId = -1;
             _playingObjectIndex = -1;
             _stageStartServerTime = 0;
 
@@ -942,9 +1209,13 @@ namespace AppleteaSystems.StageSyncSystem
         [NetworkCallable(100)]
         public void NetStartStagePlayback(int sessionId, int objectIndex, int startServerTime)
         {
+            // 直前に押した古いセッションの再生開始イベントが遅れて到着した場合は無視する
+            if (sessionId != _playbackSessionId) return;
             if (_localStartedSessionId == sessionId) return;
             _localStartedSessionId = sessionId;
 
+            _isWaitingForCooldownLoad = false;
+            _pendingLoadSessionId = -1;
             _playbackSessionId = sessionId;
             _playingObjectIndex = objectIndex;
             _stageStartServerTime = startServerTime;
@@ -952,10 +1223,30 @@ namespace AppleteaSystems.StageSyncSystem
             _isStagePlaying = true;
             _isStageOffsetLocked = true;
 
+            if (_uiController != null)
+            {
+                _uiController.SetSettingsLocked(true);
+            }
+
             RestoreVideoPlayerVolume();
             ResumeLocalVideoPlayer();
             ApplyOffset();
-            SyncActiveDirection(true);
+
+            // 動画を正常に読み込めたプレイヤーのみ即座に演出を開始する。
+            // 読み込み失敗（後からリトライで読み込むプレイヤー）は演出のみが先行再生されないよう、OnVideoStart 時点で動画・演出を同時に開始する。
+            if (IsVideoPlayerPlaying() || _localReadySessionId == sessionId)
+            {
+                SyncActiveDirection(true);
+            }
+            else
+            {
+                StopAllDirections();
+            }
+
+            if (_uiController != null)
+            {
+                _uiController.RefreshDelayStatusUI();
+            }
 
             SendCustomEventDelayedSeconds(nameof(DelayedForceSync), 1.0f);
         }
@@ -964,10 +1255,7 @@ namespace AppleteaSystems.StageSyncSystem
         {
             if (!_isStagePlaying || _isWaitingForReady) return;
             ApplyOffset();
-            if (IsUsingYamaPlayer())
-            {
-                YamaPlayer_controller.ForceSync();
-            }
+            SeekLocalVideoToCurrentStageTime();
         }
 
         #endregion
@@ -1172,7 +1460,13 @@ namespace AppleteaSystems.StageSyncSystem
 
         private void OnStagePlaybackEnded()
         {
+            _isWaitingForCooldownLoad = false;
+            _pendingLoadSessionId = -1;
             _isStageOffsetLocked = false;
+            if (_uiController != null)
+            {
+                _uiController.SetSettingsLocked(false);
+            }
             if (_hasPendingLatencyUpdate)
             {
                 _hasPendingLatencyUpdate = false;
@@ -1391,6 +1685,26 @@ namespace AppleteaSystems.StageSyncSystem
             return false;
         }
 
+        private bool IsCurrentDirectionTrackLoaded()
+        {
+            if (_directions == null || _playingObjectIndex < 0 || _playingObjectIndex >= _directions.Length) return false;
+            DirectionObject dir = _directions[_playingObjectIndex];
+            if (dir == null || dir.videoURL == null) return false;
+
+            string targetUrl = dir.videoURL.Get();
+            if (string.IsNullOrEmpty(targetUrl)) return false;
+
+            if (IsUsingYamaPlayer())
+            {
+                return YamaPlayer_controller.Track.GetUrl() == targetUrl;
+            }
+            if (IsUsingIwaSync())
+            {
+                return Iwasync_core.url != null && Iwasync_core.url.Get() == targetUrl;
+            }
+            return true;
+        }
+
         private void LoadVideoOnPlayer(int objectIndex)
         {
             DirectionObject dir = _directions[objectIndex];
@@ -1402,7 +1716,10 @@ namespace AppleteaSystems.StageSyncSystem
                 {
                     Networking.SetOwner(Networking.LocalPlayer, YamaPlayer_controller.gameObject);
                 }
-                YamaPlayer_controller.Paused = true;
+
+                // 既存トラック停止後に OnVideoPause で _paused = true を保持した状態で PlayTrack を1回のみシリアライズ実行する
+                StopLocalVideoPlayer();
+                YamaPlayer_controller.OnVideoPause();
                 Track track = Track.New(
                     YamaPlayer_controller.VideoPlayerType,
                     dir.directionName,
@@ -1413,6 +1730,9 @@ namespace AppleteaSystems.StageSyncSystem
             else if (IsUsingIwaSync())
             {
                 Iwasync_core.TakeOwnership();
+                _isInternalVideoStop = true;
+                Iwasync_core.Stop();
+                _isInternalVideoStop = false;
                 Iwasync_core.PlayURL(_MODE_VIDEO, dir.videoURL);
                 Iwasync_core.Pause();
                 Iwasync_core.RequestSerialization();
@@ -1458,6 +1778,12 @@ namespace AppleteaSystems.StageSyncSystem
                 {
                     YamaPlayer_controller.VideoPlayerHandle.Play();
                 }
+                // エラー発生後のリトライ待ち中（Stopped == true）や既にIsPlaying判定の場合でも内部の _paused を確実に解除しておく
+                // （後からリトライで読み込めた際に Controller.OnVideoStart で再び Pause されるのを防止する）
+                if (YamaPlayer_controller.Paused)
+                {
+                    YamaPlayer_controller.OnVideoPlay();
+                }
             }
             else if (IsUsingIwaSync())
             {
@@ -1465,8 +1791,41 @@ namespace AppleteaSystems.StageSyncSystem
             }
         }
 
+        private void SeekLocalVideoToCurrentStageTime()
+        {
+            if (!_isStagePlaying || _stageStartServerTime == 0) return;
+
+            float elapsedSeconds = (Networking.GetServerTimeInMilliseconds() - _stageStartServerTime) / 1000f;
+            float targetTime = Mathf.Max(0f, elapsedSeconds + GetOffsetSeconds());
+
+            if (IsUsingYamaPlayer())
+            {
+                if (YamaPlayer_controller.VideoPlayerHandle != null && !YamaPlayer_controller.IsLive && YamaPlayer_controller.IsPlaying)
+                {
+                    float duration = YamaPlayer_controller.Duration;
+                    if (duration > 0f && !float.IsInfinity(duration))
+                    {
+                        targetTime = Mathf.Clamp(targetTime, 0f, duration);
+                    }
+                    if (Mathf.Abs(YamaPlayer_controller.VideoTime - targetTime) >= SyncAccuracy)
+                    {
+                        YamaPlayer_controller.VideoPlayerHandle.VideoTime = targetTime;
+                    }
+                }
+                YamaPlayer_controller.ForceSync();
+            }
+            else if (IsUsingIwaSync())
+            {
+                if (Iwasync_core.isPlaying && Mathf.Abs(Iwasync_core.time - targetTime) >= SyncAccuracy)
+                {
+                    Iwasync_core.time = targetTime;
+                }
+            }
+        }
+
         private void StopVideoOnPlayer()
         {
+            _isInternalVideoStop = true;
             if (IsUsingYamaPlayer())
             {
                 if (!Networking.IsOwner(YamaPlayer_controller.gameObject))
@@ -1474,6 +1833,10 @@ namespace AppleteaSystems.StageSyncSystem
                     Networking.SetOwner(Networking.LocalPlayer, YamaPlayer_controller.gameObject);
                 }
                 YamaPlayer_controller.Stopped = true;
+                if (!string.IsNullOrEmpty(YamaPlayer_controller.Track.GetUrl()))
+                {
+                    YamaPlayer_controller.OnVideoStop();
+                }
                 YamaPlayer_controller.RequestSerialization();
             }
             else if (IsUsingIwaSync())
@@ -1482,21 +1845,44 @@ namespace AppleteaSystems.StageSyncSystem
                 Iwasync_core.Stop();
                 Iwasync_core.RequestSerialization();
             }
+            _isInternalVideoStop = false;
         }
 
         private void StopLocalVideoPlayer()
         {
+            _isInternalVideoStop = true;
             if (IsUsingYamaPlayer())
             {
                 if (YamaPlayer_controller.VideoPlayerHandle != null)
                 {
                     YamaPlayer_controller.VideoPlayerHandle.Stop();
+                    // VideoPlayerHandle._stopped が既に true の場合でも、先行URL解決後にAVProが開き始めたストリームを確実に閉じる
+                    BaseVRCVideoPlayer basePlayer = YamaPlayer_controller.VideoPlayerHandle.GetComponent<BaseVRCVideoPlayer>();
+                    if (basePlayer != null)
+                    {
+                        basePlayer.Stop();
+                    }
+                    if (YamaPlayer_controller.VideoPlayerHandle.FallbackHandle != null)
+                    {
+                        BaseVRCVideoPlayer fallbackBase = YamaPlayer_controller.VideoPlayerHandle.FallbackHandle.GetComponent<BaseVRCVideoPlayer>();
+                        if (fallbackBase != null)
+                        {
+                            fallbackBase.Stop();
+                        }
+                    }
+                }
+                // エラー後や終了後など VideoPlayerHandle._stopped が既に true の場合でも
+                // YamaPlayer 内部の _retryTargetUrl と Track を確実にクリアして自動リトライ暴発や同一URL再再生無視を防ぐ
+                if (!string.IsNullOrEmpty(YamaPlayer_controller.Track.GetUrl()))
+                {
+                    YamaPlayer_controller.OnVideoStop();
                 }
             }
             else if (IsUsingIwaSync())
             {
                 Iwasync_core.Stop();
             }
+            _isInternalVideoStop = false;
         }
 
         private float GetVideoPlayerVolume()

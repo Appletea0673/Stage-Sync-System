@@ -184,9 +184,19 @@ namespace AppleteaSystems.StageSyncSystem
         [UdonSynced]
         bool _syncedForceFallbackDelay = false;
 
+        [UdonSynced]
+        bool _syncedIsFallbackDelay = false;
+
         // Local state
         bool _isUpdatingUI = false;
         bool _initialized = false;
+        bool _canOperateUI = true;
+        bool _isSettingsLocked = false;
+        int _lockedSortMode = (int)DirectionSortMode.Hierarchy;
+        bool _lockedIgnoreThreshold = false;
+        bool _lockedIgnorePerformerError = false;
+        bool _lockedForceLaunchAlways = false;
+        bool _lockedForceFallbackDelay = false;
         Color _fallbackDefaultTextColor = new Color(0.3019608f, 0.3019608f, 0.3019608f, 1f);
         int[] _currentSortedIndices;
         int[] _manualOrderIndices;
@@ -211,6 +221,7 @@ namespace AppleteaSystems.StageSyncSystem
         public bool UseFallbackDelay => _syncedForceFallbackDelay;
         public DirectionSortMode CurrentSortMode => (DirectionSortMode)_syncedSortMode;
         public bool IsManualSortMode => _syncedSortMode == (int)DirectionSortMode.Manual;
+        public bool IsSettingsLocked => _isSettingsLocked || (_sssCore != null && _sssCore.IsLoadingOrPlaying);
 
         #endregion
 
@@ -238,6 +249,12 @@ namespace AppleteaSystems.StageSyncSystem
             if (_loadedPlayerCountText != null)
             {
                 _fallbackDefaultTextColor = _loadedPlayerCountText.color;
+            }
+
+            // 有効期間フォーム自体は常に表示状態（SetActive(true)）を維持し、Toggle.interactableのみで操作制限を行う
+            if (_forceLaunchDurationForm != null && !_forceLaunchDurationForm.activeSelf)
+            {
+                _forceLaunchDurationForm.SetActive(true);
             }
 
             // Force Launch用の2つのToggleは独立したON/OFFスイッチとして動作させるためToggleGroupから切り離す
@@ -307,7 +324,61 @@ namespace AppleteaSystems.StageSyncSystem
         public override void OnDeserialization()
         {
             InitializeIfNeeded();
+
+            // 演出の読み込み中・上演中は設定項目の変更をロックし、同時に入った設定変更操作を無効化して読み込みルーチンを優先する
+            if (IsSettingsLocked)
+            {
+                _syncedSortMode = _lockedSortMode;
+                _syncedIgnoreThreshold = _lockedIgnoreThreshold;
+                _syncedIgnorePerformerError = _lockedIgnorePerformerError;
+                _syncedForceLaunchAlways = _lockedForceLaunchAlways;
+                _syncedForceFallbackDelay = _lockedForceFallbackDelay;
+            }
+
             ApplyAllToUIAndCore();
+        }
+
+        public void SetOperatorInteractable(bool canOperate)
+        {
+            _canOperateUI = canOperate;
+            RefreshSettingsInteractableState();
+        }
+
+        public void SetSettingsLocked(bool locked)
+        {
+            InitializeIfNeeded();
+            if (locked && !_isSettingsLocked)
+            {
+                _lockedSortMode = _syncedSortMode;
+                _lockedIgnoreThreshold = _syncedIgnoreThreshold;
+                _lockedIgnorePerformerError = _syncedIgnorePerformerError;
+                _lockedForceLaunchAlways = _syncedForceLaunchAlways;
+                _lockedForceFallbackDelay = _syncedForceFallbackDelay;
+            }
+            _isSettingsLocked = locked;
+            RefreshSettingsInteractableState();
+        }
+
+        public void RefreshSettingsInteractableState()
+        {
+            bool canEditSettings = _canOperateUI && !IsSettingsLocked;
+
+            if (_sortHierarchyToggle != null) _sortHierarchyToggle.interactable = canEditSettings;
+            if (_sortByNameToggle != null) _sortByNameToggle.interactable = canEditSettings;
+            if (_sortManualToggle != null) _sortManualToggle.interactable = canEditSettings;
+            if (_sortByNameDescToggle != null) _sortByNameDescToggle.interactable = canEditSettings;
+            if (_sortByGameObjectNameAscToggle != null) _sortByGameObjectNameAscToggle.interactable = canEditSettings;
+            if (_sortByGameObjectNameDescToggle != null) _sortByGameObjectNameDescToggle.interactable = canEditSettings;
+
+            if (_ignoreThresholdToggle != null) _ignoreThresholdToggle.interactable = canEditSettings;
+            if (_ignorePerformerErrorToggle != null) _ignorePerformerErrorToggle.interactable = canEditSettings;
+
+            bool isDurationEnabled = canEditSettings && (_syncedIgnoreThreshold || _syncedIgnorePerformerError);
+            if (_durationOnceToggle != null) _durationOnceToggle.interactable = isDurationEnabled;
+            if (_durationAlwaysToggle != null) _durationAlwaysToggle.interactable = isDurationEnabled;
+
+            if (_delayDefaultToggle != null) _delayDefaultToggle.interactable = canEditSettings;
+            if (_delayFallbackToggle != null) _delayFallbackToggle.interactable = canEditSettings;
         }
 
         #region Playlist Switch Handling (Migrated from DirectionController)
@@ -349,9 +420,24 @@ namespace AppleteaSystems.StageSyncSystem
             _syncedTotalCount = 0;
             _syncedLoadColorState = LOAD_COLOR_DEFAULT;
             _syncedPerformerStatus = hasActivePerformer ? PERFORMER_STATUS_STANDBY : PERFORMER_STATUS_NONE;
+            _syncedIsFallbackDelay = _syncedForceFallbackDelay || (_sssCore != null && _sssCore.IsCurrentlyUsingFallbackDelay());
 
             RefreshStatusUI();
             RequestSerialization();
+        }
+
+        public void UpdateStandbyPerformerStatus(bool hasActivePerformer)
+        {
+            InitializeIfNeeded();
+            if (_syncedTotalCount > 0 && (_syncedPerformerStatus == PERFORMER_STATUS_LOADING || _syncedPerformerStatus == PERFORMER_STATUS_LOADED || _syncedPerformerStatus == PERFORMER_STATUS_ERROR))
+            {
+                RefreshDelayStatusUI();
+                return;
+            }
+
+            _syncedPerformerStatus = hasActivePerformer ? PERFORMER_STATUS_STANDBY : PERFORMER_STATUS_NONE;
+            _syncedIsFallbackDelay = _syncedForceFallbackDelay || (_sssCore != null && _sssCore.IsCurrentlyUsingFallbackDelay());
+            RefreshStatusUI();
         }
 
         public void UpdateLoadProgress(
@@ -405,6 +491,8 @@ namespace AppleteaSystems.StageSyncSystem
             {
                 _syncedPerformerStatus = PERFORMER_STATUS_LOADING;
             }
+
+            _syncedIsFallbackDelay = _syncedForceFallbackDelay || (_sssCore != null && _sssCore.IsCurrentlyUsingFallbackDelay());
 
             RefreshStatusUI();
             RequestSerialization();
@@ -484,10 +572,11 @@ namespace AppleteaSystems.StageSyncSystem
         {
             if (_delayStatusText == null) return;
 
-            bool isFallback = _syncedForceFallbackDelay;
-            if (!isFallback && _sssCore != null)
+            bool isFallback = _syncedForceFallbackDelay || _syncedIsFallbackDelay;
+            if (_sssCore != null)
             {
-                isFallback = _sssCore.IsCurrentlyUsingFallbackDelay();
+                isFallback = _syncedForceFallbackDelay || _sssCore.IsCurrentlyUsingFallbackDelay();
+                _syncedIsFallbackDelay = isFallback;
             }
 
             _delayStatusText.text = isFallback ? _delayFallbackText : _delayOperationalText;
@@ -501,6 +590,13 @@ namespace AppleteaSystems.StageSyncSystem
         {
             if (_isUpdatingUI) return;
             InitializeIfNeeded();
+
+            if (IsSettingsLocked)
+            {
+                SyncUITogglesFromState();
+                RefreshSettingsInteractableState();
+                return;
+            }
 
             int newSortMode = _syncedSortMode;
             if (_sortHierarchyToggle != null && _sortHierarchyToggle.isOn)
@@ -560,6 +656,12 @@ namespace AppleteaSystems.StageSyncSystem
         public void SetSortMode(DirectionSortMode mode)
         {
             InitializeIfNeeded();
+            if (IsSettingsLocked)
+            {
+                SyncUITogglesFromState();
+                RefreshSettingsInteractableState();
+                return;
+            }
             if (_syncedSortMode == (int)mode) return;
 
             TakeOwnership();
@@ -729,8 +831,17 @@ namespace AppleteaSystems.StageSyncSystem
             if (_isUpdatingUI) return;
             InitializeIfNeeded();
 
+            if (IsSettingsLocked)
+            {
+                SyncUITogglesFromState();
+                ApplyForceLaunchStateToCoreAndUI();
+                return;
+            }
+
             bool ignoreThreshold = _ignoreThresholdToggle != null && _ignoreThresholdToggle.isOn;
             bool ignorePerformer = _ignorePerformerErrorToggle != null && _ignorePerformerErrorToggle.isOn;
+
+            if (_syncedIgnoreThreshold == ignoreThreshold && _syncedIgnorePerformerError == ignorePerformer) return;
 
             TakeOwnership();
             _syncedIgnoreThreshold = ignoreThreshold;
@@ -744,6 +855,13 @@ namespace AppleteaSystems.StageSyncSystem
         {
             if (_isUpdatingUI) return;
             InitializeIfNeeded();
+
+            if (IsSettingsLocked)
+            {
+                SyncUITogglesFromState();
+                ApplyForceLaunchStateToCoreAndUI();
+                return;
+            }
 
             bool always = _durationAlwaysToggle != null && _durationAlwaysToggle.isOn;
             if (_durationOnceToggle != null && _durationOnceToggle.isOn)
@@ -772,6 +890,8 @@ namespace AppleteaSystems.StageSyncSystem
             TakeOwnership();
             _syncedIgnoreThreshold = false;
             _syncedIgnorePerformerError = false;
+            _lockedIgnoreThreshold = false;
+            _lockedIgnorePerformerError = false;
 
             ApplyForceLaunchStateToCoreAndUI();
             SyncUITogglesFromState();
@@ -782,34 +902,14 @@ namespace AppleteaSystems.StageSyncSystem
         {
             if (_sssCore != null)
             {
-                _sssCore.IgnoreThresholdError = _syncedIgnoreThreshold;
-                _sssCore.IgnorePerformerError = _syncedIgnorePerformerError;
+                _sssCore.ApplyForceLaunchSettingsFromUI(_syncedIgnoreThreshold, _syncedIgnorePerformerError);
             }
 
             UpdateSlideSwitchVisual(_ignoreThresholdToggle, _syncedIgnoreThreshold);
             UpdateSlideSwitchVisual(_ignorePerformerErrorToggle, _syncedIgnorePerformerError);
 
-            // どちらかのForce LaunchスイッチがONになるまで有効期間フォームを操作無効化（グレーアウト）
-            bool isDurationFormEnabled = _syncedIgnoreThreshold || _syncedIgnorePerformerError;
-            if (_durationOnceToggle != null)
-            {
-                _durationOnceToggle.interactable = isDurationFormEnabled;
-            }
-            if (_durationAlwaysToggle != null)
-            {
-                _durationAlwaysToggle.interactable = isDurationFormEnabled;
-            }
-
-            if (_forceLaunchDurationForm != null)
-            {
-                CanvasGroup cg = _forceLaunchDurationForm.GetComponent<CanvasGroup>();
-                if (cg != null)
-                {
-                    cg.interactable = isDurationFormEnabled;
-                    cg.blocksRaycasts = isDurationFormEnabled;
-                    cg.alpha = isDurationFormEnabled ? 1.0f : 0.45f;
-                }
-            }
+            // 有効期間フォームの操作有効/無効は Toggle.interactable のみで制御（レイアウト崩れ防止のため SetActive は変更しない）
+            RefreshSettingsInteractableState();
         }
 
         private void UpdateSlideSwitchVisual(Toggle toggle, bool isOn)
@@ -857,6 +957,13 @@ namespace AppleteaSystems.StageSyncSystem
             if (_isUpdatingUI) return;
             InitializeIfNeeded();
 
+            if (IsSettingsLocked)
+            {
+                SyncUITogglesFromState();
+                RefreshSettingsInteractableState();
+                return;
+            }
+
             bool useFallback = _delayFallbackToggle != null && _delayFallbackToggle.isOn;
             if (_delayDefaultToggle != null && _delayDefaultToggle.isOn)
             {
@@ -897,35 +1004,49 @@ namespace AppleteaSystems.StageSyncSystem
         {
             _isUpdatingUI = true;
 
-            // Sort Toggles
-            if (_sortHierarchyToggle != null)
-                _sortHierarchyToggle.isOn = (_syncedSortMode == (int)DirectionSortMode.Hierarchy);
-            if (_sortByNameToggle != null)
-                _sortByNameToggle.isOn = (_syncedSortMode == (int)DirectionSortMode.ByNameAsc);
-            if (_sortManualToggle != null)
-                _sortManualToggle.isOn = (_syncedSortMode == (int)DirectionSortMode.Manual);
-            if (_sortByNameDescToggle != null)
-                _sortByNameDescToggle.isOn = (_syncedSortMode == (int)DirectionSortMode.ByNameDesc);
-            if (_sortByGameObjectNameAscToggle != null)
-                _sortByGameObjectNameAscToggle.isOn = (_syncedSortMode == (int)DirectionSortMode.ByGameObjectNameAsc);
-            if (_sortByGameObjectNameDescToggle != null)
-                _sortByGameObjectNameDescToggle.isOn = (_syncedSortMode == (int)DirectionSortMode.ByGameObjectNameDesc);
+            // Sort Toggles (ToggleGroup(allowSwitchOff = false)対策として先にON側をtrueにしてからOFF側をfalseにする)
+            if (_syncedSortMode == (int)DirectionSortMode.Hierarchy && _sortHierarchyToggle != null) _sortHierarchyToggle.isOn = true;
+            else if (_syncedSortMode == (int)DirectionSortMode.ByNameAsc && _sortByNameToggle != null) _sortByNameToggle.isOn = true;
+            else if (_syncedSortMode == (int)DirectionSortMode.Manual && _sortManualToggle != null) _sortManualToggle.isOn = true;
+            else if (_syncedSortMode == (int)DirectionSortMode.ByNameDesc && _sortByNameDescToggle != null) _sortByNameDescToggle.isOn = true;
+            else if (_syncedSortMode == (int)DirectionSortMode.ByGameObjectNameAsc && _sortByGameObjectNameAscToggle != null) _sortByGameObjectNameAscToggle.isOn = true;
+            else if (_syncedSortMode == (int)DirectionSortMode.ByGameObjectNameDesc && _sortByGameObjectNameDescToggle != null) _sortByGameObjectNameDescToggle.isOn = true;
+
+            if (_sortHierarchyToggle != null && _syncedSortMode != (int)DirectionSortMode.Hierarchy) _sortHierarchyToggle.isOn = false;
+            if (_sortByNameToggle != null && _syncedSortMode != (int)DirectionSortMode.ByNameAsc) _sortByNameToggle.isOn = false;
+            if (_sortManualToggle != null && _syncedSortMode != (int)DirectionSortMode.Manual) _sortManualToggle.isOn = false;
+            if (_sortByNameDescToggle != null && _syncedSortMode != (int)DirectionSortMode.ByNameDesc) _sortByNameDescToggle.isOn = false;
+            if (_sortByGameObjectNameAscToggle != null && _syncedSortMode != (int)DirectionSortMode.ByGameObjectNameAsc) _sortByGameObjectNameAscToggle.isOn = false;
+            if (_sortByGameObjectNameDescToggle != null && _syncedSortMode != (int)DirectionSortMode.ByGameObjectNameDesc) _sortByGameObjectNameDescToggle.isOn = false;
 
             // Force Launch Toggles
             if (_ignoreThresholdToggle != null)
                 _ignoreThresholdToggle.isOn = _syncedIgnoreThreshold;
             if (_ignorePerformerErrorToggle != null)
                 _ignorePerformerErrorToggle.isOn = _syncedIgnorePerformerError;
-            if (_durationOnceToggle != null)
-                _durationOnceToggle.isOn = !_syncedForceLaunchAlways;
-            if (_durationAlwaysToggle != null)
-                _durationAlwaysToggle.isOn = _syncedForceLaunchAlways;
+
+            if (_syncedForceLaunchAlways)
+            {
+                if (_durationAlwaysToggle != null) _durationAlwaysToggle.isOn = true;
+                if (_durationOnceToggle != null) _durationOnceToggle.isOn = false;
+            }
+            else
+            {
+                if (_durationOnceToggle != null) _durationOnceToggle.isOn = true;
+                if (_durationAlwaysToggle != null) _durationAlwaysToggle.isOn = false;
+            }
 
             // Delay Calculation Toggles
-            if (_delayDefaultToggle != null)
-                _delayDefaultToggle.isOn = !_syncedForceFallbackDelay;
-            if (_delayFallbackToggle != null)
-                _delayFallbackToggle.isOn = _syncedForceFallbackDelay;
+            if (_syncedForceFallbackDelay)
+            {
+                if (_delayFallbackToggle != null) _delayFallbackToggle.isOn = true;
+                if (_delayDefaultToggle != null) _delayDefaultToggle.isOn = false;
+            }
+            else
+            {
+                if (_delayDefaultToggle != null) _delayDefaultToggle.isOn = true;
+                if (_delayFallbackToggle != null) _delayFallbackToggle.isOn = false;
+            }
 
             _isUpdatingUI = false;
         }
