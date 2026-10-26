@@ -7811,8 +7811,9 @@ MonoBehaviour:
   _performerEnableObjects:
   - {fileID: 0}
   _performerDisableObjects: []
-  AudienceDelays: 600
-  SyncAccuracy: 0.1
+  BaseSystemDelay: 260
+  AudienceDelays: 370
+  SyncAccuracy: 0.04
   ReadyTimeout: 15
   ErrorAbortThreshold: 50
 --- !u!114 &7734693092273633204
