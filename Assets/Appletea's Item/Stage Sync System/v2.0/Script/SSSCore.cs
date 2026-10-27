@@ -275,6 +275,70 @@ namespace AppleteaSystems.StageSyncSystem
             set => _playingObjectIndex = value;
         }
 
+        #region Debug Telemetry Accessors (Removable after testing)
+
+        public int StageStartServerTime => _stageStartServerTime;
+        public int BaseSystemDelayMs => BaseSystemDelay;
+        public int AudienceDelaysMs => AudienceDelays;
+        public float SyncAccuracySeconds => SyncAccuracy;
+        public bool HasMeasuredNetworkDelay => _hasMeasuredNetworkDelay;
+        public DataList KnownPlayers => _knownPlayers;
+        public DataList PerformerPlayerIds => _performerPlayerIds;
+        public DataDictionary DirectedPairDelays => _directedPairDelays;
+        public DataDictionary DirectedPairRawDelays => _directedPairPrev1;
+        public DataDictionary UndirectedPairDelays => _pairDelays;
+        public float DebugAppliedOffsetSeconds => GetOffsetSeconds();
+        public float DebugTargetStageVideoTime => GetTargetStageVideoTime();
+        public float DebugCurrentVideoTime => GetCurrentVideoTime();
+
+        public float DebugVideoDuration
+        {
+            get
+            {
+                if (IsUsingYamaPlayer()) return YamaPlayer_controller.Duration;
+                if (IsUsingIwaSync()) return Iwasync_core.duration;
+                return 0f;
+            }
+        }
+
+        public bool DebugIsVideoLooping
+        {
+            get
+            {
+                if (IsUsingYamaPlayer()) return YamaPlayer_controller.Loop;
+                return false;
+            }
+        }
+
+        public float DebugUnshiftedStageVideoTime
+        {
+            get
+            {
+                if (!_isStagePlaying || _stageStartServerTime == 0) return 0f;
+                float elapsed = Mathf.Max(0f, (Networking.GetServerTimeInMilliseconds() - _stageStartServerTime) / 1000f);
+                float duration = DebugVideoDuration;
+                if (duration > 0f && !float.IsInfinity(duration))
+                {
+                    if (DebugIsVideoLooping) return elapsed % duration;
+                    return Mathf.Clamp(elapsed, 0f, duration);
+                }
+                return elapsed;
+            }
+        }
+
+        public float DebugCurrentTimelineTime
+        {
+            get
+            {
+                if (!_isStagePlaying || _directions == null || _playingObjectIndex < 0 || _playingObjectIndex >= _directions.Length) return 0f;
+                DirectionObject dir = _directions[_playingObjectIndex];
+                if (dir == null || dir.playableDirector == null || !dir.gameObject.activeSelf) return 0f;
+                return (float)dir.playableDirector.time;
+            }
+        }
+
+        #endregion
+
         #endregion
 
         void Start()
