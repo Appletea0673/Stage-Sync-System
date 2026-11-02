@@ -98,8 +98,11 @@ namespace AppleteaSystems.StageSyncSystem
 
         // Local Variables
         bool _isPerformer = false;
+        bool _isInsidePerformerArea = false;
         const uint _MODE_VIDEO = 0x00000010;
         const float _VRC_VIDEO_LOAD_COOLDOWN = 5.25f;
+        const float _VIDEO_SEEK_THRESHOLD = 0.005f;
+        const float _AVPRO_SEEK_LAG_COMPENSATION = 0.034f;
         float _volumeTemp = 0.5f;
         bool _isMutedBySSS = false;
         int _activeDirectionIndex = -1;
@@ -258,13 +261,25 @@ namespace AppleteaSystems.StageSyncSystem
             get => _isPerformer;
             set
             {
+                _isInsidePerformerArea = value;
+
+                // 演出の読み込み中または上演中は、演者がステージ端へ移動してトリガーから一時退出しても上演終了まで演者状態をロックする
+                if (!value && IsLoadingOrPlaying && _isPerformer)
+                {
+                    return;
+                }
+
+                if (_isPerformer == value) return;
                 _isPerformer = value;
                 ApplyOffset();
                 ApplyPerformerObjects();
                 SyncLocalPerformerState();
                 if (_isStagePlaying && !_isWaitingForReady && IsVideoPlayerPlaying())
                 {
+                    SeekLocalVideoToCurrentStageTime();
                     SyncActiveDirection(true);
+                    SyncTimelineToTargetStageTime();
+                    SendCustomEventDelayedSeconds(nameof(DelayedTimelineForceSync), 0.35f);
                 }
             }
         }
@@ -474,7 +489,7 @@ namespace AppleteaSystems.StageSyncSystem
                 _pendingLoadSessionId = -1;
                 RestoreVideoPlayerVolume();
                 StopAllDirections();
-                if (_uiController != null) _uiController.SetSettingsLocked(false);
+                OnStagePlaybackEnded();
             }
 
             if (_uiController != null)
@@ -1036,10 +1051,12 @@ namespace AppleteaSystems.StageSyncSystem
             UpdatePerformerIdList(playerId, isPerformer);
 
             // 動画ロード完了通知のサーバー時刻をピギーバック活用し、yt-dlp負荷が収まった状態での高精度な片道遅延サンプルを取得する
+            // ただし受信側自身がまだ動画ロード中（AVPro初期化等によるメインスレッドスパイク中）の場合は異常値混入を防ぐため記録しない
             if (Utilities.IsValid(Networking.LocalPlayer))
             {
                 int localId = Networking.LocalPlayer.playerId;
-                if (localId != playerId && sendServerTime != 0)
+                bool localIsReadyForSession = !_isWaitingForReady || (_localReadySessionId == sessionId);
+                if (localId != playerId && sendServerTime != 0 && localIsReadyForSession)
                 {
                     int rawDelayMs = Networking.GetServerTimeInMilliseconds() - sendServerTime;
                     RecordDirectedPairDelay(playerId, localId, rawDelayMs);
@@ -1368,6 +1385,7 @@ namespace AppleteaSystems.StageSyncSystem
             SeekLocalVideoToCurrentStageTime();
             SyncTimelineToTargetStageTime();
             SendCustomEventDelayedSeconds(nameof(DelayedTimelineForceSync), 0.25f);
+            SendCustomEventDelayedSeconds(nameof(DelayedTimelineForceSync), 0.85f);
         }
 
         public void DelayedTimelineForceSync()
@@ -1506,11 +1524,15 @@ namespace AppleteaSystems.StageSyncSystem
             string dirKey = $"{senderId}_{receiverId}";
             int filteredDirDelay = clampedRaw;
 
-            // 直近サンプルとの最小値フィルタにより、動画URL解決(yt-dlp)等による正方向のフレームスパイクを除去する
+            // 直近3サンプル窓の最小値フィルタにより、動画URL解決(yt-dlp)や入室直後の正方向フレームスパイクを除去する
             if (_directedPairPrev1.TryGetValue(dirKey, TokenType.Int, out DataToken prev1Token))
             {
                 int prev1 = prev1Token.Int;
                 filteredDirDelay = Mathf.Min(clampedRaw, prev1);
+                if (_directedPairPrev2.TryGetValue(dirKey, TokenType.Int, out DataToken prev2Token))
+                {
+                    filteredDirDelay = Mathf.Min(filteredDirDelay, prev2Token.Int);
+                }
                 _directedPairPrev2.SetValue(dirKey, prev1);
             }
             _directedPairPrev1.SetValue(dirKey, clampedRaw);
@@ -1566,74 +1588,169 @@ namespace AppleteaSystems.StageSyncSystem
             return results;
         }
 
+        private bool HasBidirectionalPairDelay(int player1, int player2)
+        {
+            if (player1 == player2) return false;
+            string keyAB = $"{player1}_{player2}";
+            string keyBA = $"{player2}_{player1}";
+            return _directedPairDelays.ContainsKey(keyAB) && _directedPairDelays.ContainsKey(keyBA);
+        }
+
+        private float ComputeMedianFromBuffer(int[] buffer, int count)
+        {
+            if (count <= 0) return -1f;
+            for (int i = 1; i < count; i++)
+            {
+                int key = buffer[i];
+                int j = i - 1;
+                while (j >= 0 && buffer[j] > key)
+                {
+                    buffer[j + 1] = buffer[j];
+                    j--;
+                }
+                buffer[j + 1] = key;
+            }
+            int mid = count / 2;
+            if ((count % 2) == 1)
+            {
+                return buffer[mid];
+            }
+            return (buffer[mid - 1] + buffer[mid]) * 0.5f;
+        }
+
         public float GetServerDelaySeconds()
         {
             DataDictionary records = GetMyLatencyRecords();
             if (records.Count <= 0) return 0f;
 
+            int localId = Utilities.IsValid(Networking.LocalPlayer) ? Networking.LocalPlayer.playerId : -1;
             DataList keys = records.GetKeys();
+            int keyCount = keys.Count;
 
-            // 1. 3人以上での三角測量（演者を含むペアを優先的に採用）
-            if (records.Count >= 2)
+            // 1. 3人以上での三角測量（全3辺で双方向計測が完了し時計ズレδが相殺された三角形を優先し、全候補の中央値で単一ペア異常値を排除）
+            if (keyCount >= 2)
             {
-                int bestTriangleDelayMs = -1;
-                bool foundPerformerTriangle = false;
+                int maxTriangles = (keyCount * (keyCount - 1)) / 2;
+                int[] biPerfTriangles = new int[maxTriangles];
+                int biPerfCount = 0;
+                int[] biAllTriangles = new int[maxTriangles];
+                int biAllCount = 0;
+                int[] fallbackPerfTriangles = new int[maxTriangles];
+                int fallbackPerfCount = 0;
+                int[] fallbackAllTriangles = new int[maxTriangles];
+                int fallbackAllCount = 0;
 
-                for (int x = keys.Count - 1; x >= 0; x--)
+                for (int x = keyCount - 1; x >= 0; x--)
                 {
                     for (int y = x - 1; y >= 0; y--)
                     {
                         int playerX = keys[x].Int;
                         int playerY = keys[y].Int;
                         int delayXY = GetDelayWithTwoPlayers(playerX, playerY);
-                        if (delayXY >= 0)
-                        {
-                            int delayX = records[playerX].Int;
-                            int delayY = records[playerY].Int;
-                            int candidateMs = Mathf.Max(0, (delayX + delayY - delayXY) / 2);
-                            bool involvesPerformer = _performerPlayerIds.Contains(playerX) || _performerPlayerIds.Contains(playerY);
+                        if (delayXY < 0) continue;
 
-                            if (involvesPerformer && !foundPerformerTriangle)
+                        int delayX = records[playerX].Int;
+                        int delayY = records[playerY].Int;
+                        int candidateMs = Mathf.Max(0, (delayX + delayY - delayXY) / 2);
+                        bool involvesPerformer = _performerPlayerIds.Contains(playerX) || _performerPlayerIds.Contains(playerY);
+                        bool isFullyBidirectional = localId >= 0
+                            && HasBidirectionalPairDelay(localId, playerX)
+                            && HasBidirectionalPairDelay(localId, playerY)
+                            && HasBidirectionalPairDelay(playerX, playerY);
+
+                        if (isFullyBidirectional)
+                        {
+                            biAllTriangles[biAllCount++] = candidateMs;
+                            if (involvesPerformer)
                             {
-                                bestTriangleDelayMs = candidateMs;
-                                foundPerformerTriangle = true;
+                                biPerfTriangles[biPerfCount++] = candidateMs;
                             }
-                            else if (bestTriangleDelayMs < 0)
-                            {
-                                bestTriangleDelayMs = candidateMs;
-                            }
+                        }
+
+                        fallbackAllTriangles[fallbackAllCount++] = candidateMs;
+                        if (involvesPerformer)
+                        {
+                            fallbackPerfTriangles[fallbackPerfCount++] = candidateMs;
                         }
                     }
                 }
 
-                if (bestTriangleDelayMs >= 0)
+                float medianTriangleMs = -1f;
+                if (biAllCount > 0)
+                {
+                    medianTriangleMs = ComputeMedianFromBuffer(biAllTriangles, biAllCount);
+                }
+                else if (fallbackPerfCount > 0)
+                {
+                    medianTriangleMs = ComputeMedianFromBuffer(fallbackPerfTriangles, fallbackPerfCount);
+                }
+                else if (fallbackAllCount > 0)
+                {
+                    medianTriangleMs = ComputeMedianFromBuffer(fallbackAllTriangles, fallbackAllCount);
+                }
+
+                if (medianTriangleMs >= 0f)
                 {
                     _hasMeasuredNetworkDelay = true;
-                    return bestTriangleDelayMs / 1000f;
+                    return medianTriangleMs / 1000f;
                 }
             }
 
-            // 2. 2人インスタンス時（または三角ペア成立前）の双方向ペア遅延折半方式
-            int bestPairDelayMs = -1;
-            for (int i = keys.Count - 1; i >= 0; i--)
+            // 2. 2人インスタンス時（または三角ペア成立前）の双方向ペア遅延折半方式（中央値採用）
+            int[] biPerfPairs = new int[keyCount];
+            int biPerfPairCount = 0;
+            int[] biAllPairs = new int[keyCount];
+            int biAllPairCount = 0;
+            int[] fallbackPerfPairs = new int[keyCount];
+            int fallbackPerfPairCount = 0;
+            int[] fallbackAllPairs = new int[keyCount];
+            int fallbackAllPairCount = 0;
+
+            for (int i = keyCount - 1; i >= 0; i--)
             {
                 int otherId = keys[i].Int;
                 int delayMs = records[otherId].Int;
-                if (_performerPlayerIds.Contains(otherId))
+                bool isPerf = _performerPlayerIds.Contains(otherId);
+                bool isBi = localId >= 0 && HasBidirectionalPairDelay(localId, otherId);
+
+                if (isBi)
                 {
-                    bestPairDelayMs = delayMs;
-                    break;
+                    biAllPairs[biAllPairCount++] = delayMs;
+                    if (isPerf)
+                    {
+                        biPerfPairs[biPerfPairCount++] = delayMs;
+                    }
                 }
-                if (bestPairDelayMs < 0)
+
+                fallbackAllPairs[fallbackAllPairCount++] = delayMs;
+                if (isPerf)
                 {
-                    bestPairDelayMs = delayMs;
+                    fallbackPerfPairs[fallbackPerfPairCount++] = delayMs;
                 }
             }
 
-            if (bestPairDelayMs >= 0)
+            float medianPairMs = -1f;
+            if (biPerfPairCount > 0)
+            {
+                medianPairMs = ComputeMedianFromBuffer(biPerfPairs, biPerfPairCount);
+            }
+            else if (biAllPairCount > 0)
+            {
+                medianPairMs = ComputeMedianFromBuffer(biAllPairs, biAllPairCount);
+            }
+            else if (fallbackPerfPairCount > 0)
+            {
+                medianPairMs = ComputeMedianFromBuffer(fallbackPerfPairs, fallbackPerfPairCount);
+            }
+            else if (fallbackAllPairCount > 0)
+            {
+                medianPairMs = ComputeMedianFromBuffer(fallbackAllPairs, fallbackAllPairCount);
+            }
+
+            if (medianPairMs >= 0f)
             {
                 _hasMeasuredNetworkDelay = true;
-                return (bestPairDelayMs / 2f) / 1000f;
+                return (medianPairMs * 0.5f) / 1000f;
             }
 
             return 0f;
@@ -1685,6 +1802,16 @@ namespace AppleteaSystems.StageSyncSystem
             {
                 _uiController.SetSettingsLocked(false);
             }
+
+            // 上演中にトリガーから退出して演者状態がロックされていた場合、上演終了時点で実際のエリア在室状態(_isInsidePerformerArea)へ同期解除する
+            if (_isPerformer != _isInsidePerformerArea)
+            {
+                _isPerformer = _isInsidePerformerArea;
+                ApplyOffset();
+                ApplyPerformerObjects();
+                SyncLocalPerformerState();
+            }
+
             if (_hasPendingLatencyUpdate)
             {
                 _hasPendingLatencyUpdate = false;
@@ -2009,13 +2136,8 @@ namespace AppleteaSystems.StageSyncSystem
             }
         }
 
-        private float GetTargetStageVideoTime()
+        private float ClampStageVideoTime(float targetTime)
         {
-            if (!_isStagePlaying || _stageStartServerTime == 0) return GetCurrentVideoTime();
-
-            float elapsedSeconds = (Networking.GetServerTimeInMilliseconds() - _stageStartServerTime) / 1000f;
-            float targetTime = Mathf.Max(0f, elapsedSeconds + GetOffsetSeconds());
-
             if (IsUsingYamaPlayer())
             {
                 float duration = YamaPlayer_controller.Duration;
@@ -2043,6 +2165,16 @@ namespace AppleteaSystems.StageSyncSystem
             return targetTime;
         }
 
+        private float GetTargetStageVideoTime()
+        {
+            if (!_isStagePlaying || _stageStartServerTime == 0) return GetCurrentVideoTime();
+
+            float elapsedSeconds = (Networking.GetServerTimeInMilliseconds() - _stageStartServerTime) / 1000f;
+            float targetTime = Mathf.Max(0f, elapsedSeconds + GetOffsetSeconds());
+
+            return ClampStageVideoTime(targetTime);
+        }
+
         private void SeekLocalVideoToCurrentStageTime()
         {
             if (!_isStagePlaying) return;
@@ -2063,18 +2195,24 @@ namespace AppleteaSystems.StageSyncSystem
                 if (YamaPlayer_controller.VideoPlayerHandle != null && !YamaPlayer_controller.IsLive && YamaPlayer_controller.IsPlaying)
                 {
                     // 同一フレームでの VideoTime 代入と ForceSync() の二重シークによる AVPro デコーダ競合を防ぐため、
-                    // _stageStartServerTime 基準の単一シークのみを高精度閾値(15ms)で実行する
-                    if (Mathf.Abs(YamaPlayer_controller.VideoTime - targetTime) >= 0.015f)
+                    // _stageStartServerTime 基準の単一シークのみを高精度閾値(5ms)で実行し、AVProシーク時のデコード停止ラグ(約34ms)を先読み補正する
+                    if (Mathf.Abs(YamaPlayer_controller.VideoTime - targetTime) >= _VIDEO_SEEK_THRESHOLD)
                     {
-                        YamaPlayer_controller.VideoPlayerHandle.VideoTime = targetTime;
+                        float compensatedTarget = targetTime > 0.001f
+                            ? ClampStageVideoTime(targetTime + _AVPRO_SEEK_LAG_COMPENSATION)
+                            : targetTime;
+                        YamaPlayer_controller.VideoPlayerHandle.VideoTime = compensatedTarget;
                     }
                 }
             }
             else if (IsUsingIwaSync())
             {
-                if (Iwasync_core.isPlaying && Mathf.Abs(Iwasync_core.time - targetTime) >= 0.015f)
+                if (Iwasync_core.isPlaying && Mathf.Abs(Iwasync_core.time - targetTime) >= _VIDEO_SEEK_THRESHOLD)
                 {
-                    Iwasync_core.time = targetTime;
+                    float compensatedTarget = targetTime > 0.001f
+                        ? ClampStageVideoTime(targetTime + _AVPRO_SEEK_LAG_COMPENSATION)
+                        : targetTime;
+                    Iwasync_core.time = compensatedTarget;
                 }
             }
         }

@@ -81,7 +81,7 @@ namespace AppleteaSystems.StageSyncSystem
 
             DataDictionary pairDelays = _sssCore.UndirectedPairDelays;
             int currentPairCount = pairDelays != null ? pairDelays.Count : 0;
-            int currentNetDelay = Mathf.RoundToInt(_sssCore.NetworkDelay);
+            int currentNetDelay = Mathf.RoundToInt(_sssCore.NetworkDelay * 1000f);
             if (currentNetDelay != _lastLoggedNetworkDelay || currentPairCount != _lastKnownPairCount)
             {
                 _lastLoggedNetworkDelay = currentNetDelay;
@@ -126,7 +126,7 @@ namespace AppleteaSystems.StageSyncSystem
             DataList perfList = _sssCore.PerformerPlayerIds;
             int perfCount = perfList != null ? perfList.Count : 0;
 
-            int netDelayMs = Mathf.RoundToInt(_sssCore.NetworkDelay);
+            int netDelayMs = Mathf.RoundToInt(_sssCore.NetworkDelay * 1000f);
             int baseSysMs = _sssCore.BaseSystemDelayMs;
             int fallbackMs = _sssCore.AudienceDelaysMs;
             float appliedOffsetMs = _sssCore.DebugAppliedOffsetSeconds * 1000f;
@@ -291,7 +291,7 @@ namespace AppleteaSystems.StageSyncSystem
 
             string modeStr = _sssCore.IsCurrentlyUsingFallbackDelay() ? "Fallback" : "Operational";
             string roleStr = _sssCore.IsPerformer ? "Performer" : "Audience";
-            int netDelayMs = Mathf.RoundToInt(_sssCore.NetworkDelay);
+            int netDelayMs = Mathf.RoundToInt(_sssCore.NetworkDelay * 1000f);
 
             Debug.Log(
                 $"[SSS-Debug-Test1] Trigger={triggerReason} | Local={localInfo} | Role={roleStr} | Mode={modeStr} | " +
