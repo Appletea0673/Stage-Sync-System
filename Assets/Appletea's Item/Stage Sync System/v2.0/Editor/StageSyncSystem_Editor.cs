@@ -1,15 +1,18 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using HoshinoLabs.IwaSync3.Udon;
 using UdonSharp;
 using UdonSharpEditor;
 using UnityEditor;
 using UnityEditor.Build;
 using UnityEditor.Build.Reporting;
+using UnityEditor.SceneManagement;
 using UnityEditorInternal;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 using UnityEngine.UI;
+using VRC.SDK3.Components;
 using VRC.SDKBase;
 using Yamadev.YamaStream;
 
@@ -23,11 +26,13 @@ namespace AppleteaSystems.StageSyncSystem
         SerializedObject SSS_Core;
         SerializedObject directionController;
         SerializedObject uiControllerSO;
+        SerializedObject performerUIControllerSO;
 
         Texture2D Thumbnail;
         SSSCore _SSSCore;
         DirectionController _directionController;
         SSSUIController _uiController;
+        SSSPerformerUIController _performerUIController;
 
         Controller _YamaPlayer_Controller = null;
         VideoCore _Iwasync_Core = null;
@@ -35,9 +40,11 @@ namespace AppleteaSystems.StageSyncSystem
         ReorderableList _reorderableList;
 
         const string _directionSWRootPath = "UI/Canvas/Panel/Playlist Menu/Scroll View/Scroll View/Viewport/Content";
+        const string _performerSWRootPath = "Performer Portable UI/Canvas/StandbyPanel/Scroll View/Viewport/Content";
         const string _directionSW_BaseName = "DirectionSW";
         const string _bridgeObjectName = "Bridge";
         const string _uiObjectName = "UI";
+        const string _performerRootObjectName = "Performer Portable UI";
 
         bool isFoldout = true;
         int _pendingMoveFrom = -1;
@@ -66,14 +73,15 @@ namespace AppleteaSystems.StageSyncSystem
             SetVideoPlayers(_YamaPlayer_Controller, _Iwasync_Core, SSS_Core);
             SetSSSCore(directionController, _SSSCore);
 
-            // シーン上のオブジェクトである場合、Bridge・UIControllerの自動構成とUIスイッチの生成を実行
+            // シーン上のオブジェクトである場合、Bridge・UIController・PerformerPortableUIの自動構成とUIスイッチの生成を実行
             if (!EditorUtility.IsPersistent(_directionController.gameObject))
             {
                 SetupBridges(_SSSCore, _YamaPlayer_Controller, _Iwasync_Core, SSS_Core);
                 SetupUIController(_directionController, directionController, _SSSCore, SSS_Core, out _uiController, out uiControllerSO);
+                SetupPerformerPortableUI(_directionController, directionController, _SSSCore, SSS_Core, _uiController, uiControllerSO, out _performerUIController, out performerUIControllerSO);
 
                 GetSyncedDirectionList(SSS_Core, out _directionList);
-                ApplyDirectionOrder(_directionController, directionController, _SSSCore, SSS_Core, _uiController, uiControllerSO, _directionList);
+                ApplyDirectionOrder(_directionController, directionController, _SSSCore, SSS_Core, _uiController, uiControllerSO, _directionList, _performerUIController, performerUIControllerSO);
                 SetupReorderableList();
             }
             else
@@ -82,6 +90,11 @@ namespace AppleteaSystems.StageSyncSystem
                 if (_uiController != null)
                 {
                     uiControllerSO = new SerializedObject(_uiController);
+                }
+                _performerUIController = GetPerformerUIController(_directionController);
+                if (_performerUIController != null)
+                {
+                    performerUIControllerSO = new SerializedObject(_performerUIController);
                 }
             }
         }
@@ -144,7 +157,7 @@ namespace AppleteaSystems.StageSyncSystem
 
             _reorderableList.onReorderCallback = (ReorderableList list) =>
             {
-                ApplyDirectionOrder(_directionController, directionController, _SSSCore, SSS_Core, _uiController, uiControllerSO, _directionList);
+                ApplyDirectionOrder(_directionController, directionController, _SSSCore, SSS_Core, _uiController, uiControllerSO, _directionList, _performerUIController, performerUIControllerSO);
             };
         }
 
@@ -183,6 +196,18 @@ namespace AppleteaSystems.StageSyncSystem
             }
             SSSUIController[] uiTemp = FindObjectsByType<SSSUIController>(FindObjectsInactive.Include, FindObjectsSortMode.None);
             if (uiTemp != null && uiTemp.Length > 0) return uiTemp[0];
+            return null;
+        }
+
+        internal static SSSPerformerUIController GetPerformerUIController(DirectionController dirController = null)
+        {
+            if (dirController != null)
+            {
+                SSSPerformerUIController childPerfUI = dirController.GetComponentInChildren<SSSPerformerUIController>(true);
+                if (childPerfUI != null) return childPerfUI;
+            }
+            SSSPerformerUIController[] perfTemp = FindObjectsByType<SSSPerformerUIController>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            if (perfTemp != null && perfTemp.Length > 0) return perfTemp[0];
             return null;
         }
 
@@ -313,9 +338,20 @@ namespace AppleteaSystems.StageSyncSystem
             SerializedObject sssCoreSO,
             SSSUIController uiController,
             SerializedObject uiControllerSO,
-            List<DirectionObject> directionList)
+            List<DirectionObject> directionList,
+            SSSPerformerUIController performerUIController = null,
+            SerializedObject performerUIControllerSO = null)
         {
             if (dirController == null || sssCore == null || directionList == null) return;
+
+            if (performerUIController == null)
+            {
+                performerUIController = GetPerformerUIController(dirController);
+            }
+            if (performerUIController != null && performerUIControllerSO == null)
+            {
+                performerUIControllerSO = new SerializedObject(performerUIController);
+            }
 
             List<GameObject> directionSWList = new List<GameObject>();
             Transform directorSWRoot = dirController.transform.Find(_directionSWRootPath);
@@ -330,10 +366,7 @@ namespace AppleteaSystems.StageSyncSystem
                         Button baseBtn = baseBtnTransform.GetComponent<Button>();
                         if (baseBtn != null)
                         {
-                            SerializedObject baseBtnSO = new SerializedObject(baseBtn);
-                            baseBtnSO.Update();
-                            EnsurePersistentSendCustomEvent(baseBtnSO, "m_OnClick.m_PersistentCalls.m_Calls", uiUdon, "OnButtonClicked");
-                            baseBtnSO.ApplyModifiedPropertiesWithoutUndo();
+                            ConfigureDirectionSWTemplateButton(baseBtn, uiUdon, "OnButtonClicked");
                         }
                     }
                 }
@@ -343,6 +376,31 @@ namespace AppleteaSystems.StageSyncSystem
             }
 
             SettingDirection_UIController(uiControllerSO, directionSWList);
+
+            // 演者用操作端末 (Performer Portable UI) 側の演出予約ボタン群も同期生成・結線
+            List<GameObject> performerSWList = new List<GameObject>();
+            Transform performerSWRoot = dirController.transform.Find(_performerSWRootPath);
+            if (performerSWRoot != null)
+            {
+                if (performerUIController != null)
+                {
+                    VRC.Udon.UdonBehaviour perfUdon = UdonSharpEditorUtility.GetBackingUdonBehaviour(performerUIController);
+                    Transform perfBaseBtnTransform = performerSWRoot.Find($"{_directionSW_BaseName}/Button");
+                    if (perfUdon != null && perfBaseBtnTransform != null)
+                    {
+                        Button perfBaseBtn = perfBaseBtnTransform.GetComponent<Button>();
+                        if (perfBaseBtn != null)
+                        {
+                            ConfigureDirectionSWTemplateButton(perfBaseBtn, perfUdon, "OnButtonClicked");
+                        }
+                    }
+                }
+
+                DeleteDirectionSW(performerSWRoot, _directionSW_BaseName);
+                performerSWList = GenerateDirectionSW(performerSWRoot, _directionSW_BaseName, directionList);
+            }
+
+            SettingDirection_UIController(performerUIControllerSO, performerSWList);
             SettingDirection_Core(sssCoreSO, directionList);
 
             UdonSharpEditorUtility.CopyProxyToUdon(dirController);
@@ -354,6 +412,12 @@ namespace AppleteaSystems.StageSyncSystem
             {
                 UdonSharpEditorUtility.CopyProxyToUdon(uiController);
                 EditorUtility.SetDirty(uiController);
+            }
+
+            if (performerUIController != null)
+            {
+                UdonSharpEditorUtility.CopyProxyToUdon(performerUIController);
+                EditorUtility.SetDirty(performerUIController);
             }
         }
 
@@ -674,6 +738,846 @@ namespace AppleteaSystems.StageSyncSystem
             newCall.FindPropertyRelative("m_CallState").intValue = 2; // UnityEventCallState.RuntimeOnly
         }
 
+        private static void ConfigureButtonForUdon(Button button, VRC.Udon.UdonBehaviour targetUdon, string eventName, bool? interactable = null)
+        {
+            if (button == null || targetUdon == null) return;
+
+            SerializedObject btnSO = new SerializedObject(button);
+            btnSO.Update();
+
+            if (interactable.HasValue)
+            {
+                SerializedProperty interactableProp = btnSO.FindProperty("m_Interactable");
+                if (interactableProp != null) interactableProp.boolValue = interactable.Value;
+            }
+
+            EnsurePersistentSendCustomEvent(btnSO, "m_OnClick.m_PersistentCalls.m_Calls", targetUdon, eventName);
+            btnSO.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        private static void ConfigureDirectionSWTemplateButton(Button baseBtn, VRC.Udon.UdonBehaviour targetUdon, string eventName)
+        {
+            if (baseBtn == null || targetUdon == null) return;
+
+            SerializedObject baseBtnSO = new SerializedObject(baseBtn);
+            baseBtnSO.Update();
+
+            SerializedProperty callsProp = baseBtnSO.FindProperty("m_OnClick.m_PersistentCalls.m_Calls");
+            if (callsProp != null && callsProp.isArray)
+            {
+                callsProp.ClearArray();
+
+                // Call 0: baseBtn.enabled = false (FindSender識別用)
+                callsProp.InsertArrayElementAtIndex(0);
+                SerializedProperty call0 = callsProp.GetArrayElementAtIndex(0);
+                call0.FindPropertyRelative("m_Target").objectReferenceValue = baseBtn;
+                call0.FindPropertyRelative("m_TargetAssemblyTypeName").stringValue = typeof(Behaviour).AssemblyQualifiedName;
+                call0.FindPropertyRelative("m_MethodName").stringValue = "set_enabled";
+                call0.FindPropertyRelative("m_Mode").intValue = 6; // PersistentListenerMode.Bool
+                call0.FindPropertyRelative("m_Arguments.m_ObjectArgument").objectReferenceValue = null;
+                call0.FindPropertyRelative("m_Arguments.m_ObjectArgumentAssemblyTypeName").stringValue = "UnityEngine.Object, UnityEngine";
+                call0.FindPropertyRelative("m_Arguments.m_IntArgument").intValue = 0;
+                call0.FindPropertyRelative("m_Arguments.m_FloatArgument").floatValue = 0f;
+                call0.FindPropertyRelative("m_Arguments.m_StringArgument").stringValue = "";
+                call0.FindPropertyRelative("m_Arguments.m_BoolArgument").boolValue = false;
+                call0.FindPropertyRelative("m_CallState").intValue = 2;
+
+                // Call 1: targetUdon.SendCustomEvent(eventName)
+                callsProp.InsertArrayElementAtIndex(1);
+                SerializedProperty call1 = callsProp.GetArrayElementAtIndex(1);
+                call1.FindPropertyRelative("m_Target").objectReferenceValue = targetUdon;
+                call1.FindPropertyRelative("m_TargetAssemblyTypeName").stringValue = typeof(VRC.Udon.UdonBehaviour).AssemblyQualifiedName;
+                call1.FindPropertyRelative("m_MethodName").stringValue = "SendCustomEvent";
+                call1.FindPropertyRelative("m_Mode").intValue = 5; // PersistentListenerMode.String
+                call1.FindPropertyRelative("m_Arguments.m_ObjectArgument").objectReferenceValue = null;
+                call1.FindPropertyRelative("m_Arguments.m_ObjectArgumentAssemblyTypeName").stringValue = "UnityEngine.Object, UnityEngine";
+                call1.FindPropertyRelative("m_Arguments.m_IntArgument").intValue = 0;
+                call1.FindPropertyRelative("m_Arguments.m_FloatArgument").floatValue = 0f;
+                call1.FindPropertyRelative("m_Arguments.m_StringArgument").stringValue = eventName;
+                call1.FindPropertyRelative("m_Arguments.m_BoolArgument").boolValue = false;
+                call1.FindPropertyRelative("m_CallState").intValue = 2;
+
+                // Call 2: baseBtn.enabled = true
+                callsProp.InsertArrayElementAtIndex(2);
+                SerializedProperty call2 = callsProp.GetArrayElementAtIndex(2);
+                call2.FindPropertyRelative("m_Target").objectReferenceValue = baseBtn;
+                call2.FindPropertyRelative("m_TargetAssemblyTypeName").stringValue = typeof(Behaviour).AssemblyQualifiedName;
+                call2.FindPropertyRelative("m_MethodName").stringValue = "set_enabled";
+                call2.FindPropertyRelative("m_Mode").intValue = 6; // PersistentListenerMode.Bool
+                call2.FindPropertyRelative("m_Arguments.m_ObjectArgument").objectReferenceValue = null;
+                call2.FindPropertyRelative("m_Arguments.m_ObjectArgumentAssemblyTypeName").stringValue = "UnityEngine.Object, UnityEngine";
+                call2.FindPropertyRelative("m_Arguments.m_IntArgument").intValue = 0;
+                call2.FindPropertyRelative("m_Arguments.m_FloatArgument").floatValue = 0f;
+                call2.FindPropertyRelative("m_Arguments.m_StringArgument").stringValue = "";
+                call2.FindPropertyRelative("m_Arguments.m_BoolArgument").boolValue = true;
+                call2.FindPropertyRelative("m_CallState").intValue = 2;
+            }
+
+            baseBtnSO.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        internal static bool EnsurePerformerProgramAssetsReady()
+        {
+            bool allReady = true;
+            allReady &= EnsureSingleProgramAssetReady(typeof(SSSPerformerUIController), "SSSPerformerUIController");
+            allReady &= EnsureSingleProgramAssetReady(typeof(SSSPerformerTrigger), "SSSPerformerTrigger");
+            allReady &= EnsureSingleProgramAssetReady(typeof(SSSPerformerProximityChecker), "SSSPerformerProximityChecker");
+            return allReady;
+        }
+
+        private static bool EnsureSingleProgramAssetReady(Type scriptType, string scriptName)
+        {
+            UdonSharpProgramAsset programAsset = UdonSharpEditorUtility.GetUdonSharpProgramAsset(scriptType);
+            if (programAsset == null)
+            {
+                string[] guids = AssetDatabase.FindAssets($"{scriptName} t:MonoScript");
+                MonoScript targetScript = null;
+                foreach (string guid in guids)
+                {
+                    string path = AssetDatabase.GUIDToAssetPath(guid);
+                    MonoScript ms = AssetDatabase.LoadAssetAtPath<MonoScript>(path);
+                    if (ms != null && ms.GetClass() == scriptType)
+                    {
+                        targetScript = ms;
+                        break;
+                    }
+                }
+                if (targetScript == null) return false;
+
+                string scriptPath = AssetDatabase.GetAssetPath(targetScript);
+                if (string.IsNullOrEmpty(scriptPath)) return false;
+
+                string assetPath = Path.ChangeExtension(scriptPath, ".asset");
+                programAsset = AssetDatabase.LoadAssetAtPath<UdonSharpProgramAsset>(assetPath);
+                if (programAsset == null)
+                {
+                    programAsset = ScriptableObject.CreateInstance<UdonSharpProgramAsset>();
+                    programAsset.sourceCsScript = targetScript;
+                    AssetDatabase.CreateAsset(programAsset, assetPath);
+                    AssetDatabase.SaveAssets();
+                    UdonSharpProgramAsset.CompileAllCsPrograms(true);
+                    return false;
+                }
+            }
+
+            if (programAsset.ScriptVersion < UdonSharpProgramVersion.CurrentVersion ||
+                programAsset.CompiledVersion < UdonSharpProgramVersion.CurrentVersion)
+            {
+                UdonSharpProgramAsset.CompileAllCsPrograms(true);
+                return false;
+            }
+
+            return true;
+        }
+
+        internal static void SetupPerformerPortableUI(
+            DirectionController dirController,
+            SerializedObject dirControllerSO,
+            SSSCore sssCore,
+            SerializedObject sssCoreSO,
+            SSSUIController uiController,
+            SerializedObject uiControllerSO,
+            out SSSPerformerUIController performerUI,
+            out SerializedObject performerUISO)
+        {
+            performerUI = null;
+            performerUISO = null;
+
+            if (dirController == null || sssCore == null || EditorUtility.IsPersistent(dirController.gameObject)) return;
+            if (!EnsurePerformerProgramAssetsReady()) return;
+
+            Transform root = dirController.transform;
+            Transform perfRootTrans = root.Find(_performerRootObjectName);
+            GameObject perfRootGO;
+            if (perfRootTrans == null)
+            {
+                perfRootGO = new GameObject(_performerRootObjectName);
+                perfRootGO.transform.SetParent(root, false);
+                perfRootGO.transform.localPosition = new Vector3(-1.2f, 1.15f, 0.5f);
+                perfRootGO.transform.localRotation = Quaternion.identity;
+                perfRootGO.transform.localScale = Vector3.one;
+            }
+            else
+            {
+                perfRootGO = perfRootTrans.gameObject;
+            }
+
+            // 1. 親機 Rigidbody / BoxCollider / VRCPickup / SSSPerformerUIController (VRCObjectSyncは付与しない完全ローカルPickup)
+            Rigidbody parentRb = perfRootGO.GetComponent<Rigidbody>();
+            if (parentRb == null) parentRb = perfRootGO.AddComponent<Rigidbody>();
+            parentRb.isKinematic = true;
+            parentRb.useGravity = false;
+
+            BoxCollider parentCol = perfRootGO.GetComponent<BoxCollider>();
+            if (parentCol == null) parentCol = perfRootGO.AddComponent<BoxCollider>();
+            parentCol.isTrigger = false;
+            parentCol.center = new Vector3(0f, -0.25f, 0f);
+            parentCol.size = new Vector3(0.46f, 0.045f, 0.045f);
+
+            VRCPickup parentPickup = perfRootGO.GetComponent<VRCPickup>();
+            if (parentPickup == null) parentPickup = perfRootGO.AddComponent<VRCPickup>();
+            parentPickup.pickupable = true;
+            parentPickup.AutoHold = VRC_Pickup.AutoHoldMode.Yes;
+            parentPickup.InteractionText = "Move Performer Panel";
+            parentPickup.UseText = "";
+
+            performerUI = perfRootGO.GetComponent<SSSPerformerUIController>();
+            if (performerUI == null)
+            {
+                performerUI = perfRootGO.AddUdonSharpComponent<SSSPerformerUIController>();
+                VRC.Udon.UdonBehaviour perfBacking = UdonSharpEditorUtility.GetBackingUdonBehaviour(performerUI);
+                if (perfBacking != null) perfBacking.SyncMethod = Networking.SyncType.None;
+            }
+
+            // 2. ProximityChecker [SphereCollider(isTrigger=true, Radius=1.8m), SSSPerformerProximityChecker]
+            Transform proxTrans = perfRootGO.transform.Find("ProximityChecker");
+            GameObject proxGO = proxTrans != null ? proxTrans.gameObject : new GameObject("ProximityChecker");
+            proxGO.transform.SetParent(perfRootGO.transform, false);
+            proxGO.transform.localPosition = Vector3.zero;
+            proxGO.transform.localRotation = Quaternion.identity;
+            proxGO.transform.localScale = Vector3.one;
+
+            SphereCollider proxCol = proxGO.GetComponent<SphereCollider>();
+            if (proxCol == null) proxCol = proxGO.AddComponent<SphereCollider>();
+            proxCol.isTrigger = true;
+            proxCol.radius = 1.8f;
+
+            SSSPerformerProximityChecker proxChecker = proxGO.GetComponent<SSSPerformerProximityChecker>();
+            if (proxChecker == null)
+            {
+                proxChecker = proxGO.AddUdonSharpComponent<SSSPerformerProximityChecker>();
+                VRC.Udon.UdonBehaviour proxBacking = UdonSharpEditorUtility.GetBackingUdonBehaviour(proxChecker);
+                if (proxBacking != null) proxBacking.SyncMethod = Networking.SyncType.None;
+            }
+            if (proxChecker != null)
+            {
+                SerializedObject proxSO = new SerializedObject(proxChecker);
+                proxSO.Update();
+                proxSO.FindProperty("_performerUIController").objectReferenceValue = performerUI;
+                proxSO.FindProperty("_proximityCollider").objectReferenceValue = proxCol;
+                proxSO.ApplyModifiedPropertiesWithoutUndo();
+                UdonSharpEditorUtility.CopyProxyToUdon(proxChecker);
+            }
+
+            // 3. VisualMesh (親機フレームハンドル / Lock状態表示)
+            Transform visualMeshTrans = perfRootGO.transform.Find("VisualMesh");
+            GameObject visualMeshGO;
+            if (visualMeshTrans == null)
+            {
+                visualMeshGO = GameObject.CreatePrimitive(PrimitiveType.Cube);
+                visualMeshGO.name = "VisualMesh";
+                visualMeshGO.transform.SetParent(perfRootGO.transform, false);
+                visualMeshGO.transform.localPosition = new Vector3(0f, -0.25f, 0f);
+                visualMeshGO.transform.localRotation = Quaternion.identity;
+                visualMeshGO.transform.localScale = new Vector3(0.46f, 0.025f, 0.025f);
+                Collider extraCol = visualMeshGO.GetComponent<Collider>();
+                if (extraCol != null) DestroyImmediate(extraCol);
+            }
+            else
+            {
+                visualMeshGO = visualMeshTrans.gameObject;
+            }
+
+            Transform lockIndTrans = visualMeshGO.transform.Find("LockIndicator");
+            GameObject lockIndGO;
+            if (lockIndTrans == null)
+            {
+                lockIndGO = GameObject.CreatePrimitive(PrimitiveType.Cube);
+                lockIndGO.name = "LockIndicator";
+                lockIndGO.transform.SetParent(visualMeshGO.transform, false);
+                lockIndGO.transform.localPosition = new Vector3(0f, 0.6f, -0.55f);
+                lockIndGO.transform.localRotation = Quaternion.identity;
+                lockIndGO.transform.localScale = new Vector3(0.95f, 0.35f, 0.25f);
+                Collider extraCol = lockIndGO.GetComponent<Collider>();
+                if (extraCol != null) DestroyImmediate(extraCol);
+                lockIndGO.SetActive(false);
+            }
+            else
+            {
+                lockIndGO = lockIndTrans.gameObject;
+            }
+
+            // 4. TriggerHolster & PerformerTrigger
+            Transform holsterTrans = perfRootGO.transform.Find("TriggerHolster");
+            GameObject holsterGO = holsterTrans != null ? holsterTrans.gameObject : new GameObject("TriggerHolster");
+            holsterGO.transform.SetParent(perfRootGO.transform, false);
+            if (holsterTrans == null)
+            {
+                holsterGO.transform.localPosition = new Vector3(0.28f, -0.10f, 0f);
+                holsterGO.transform.localRotation = Quaternion.identity;
+                holsterGO.transform.localScale = Vector3.one;
+            }
+
+            Transform holsterRingTrans = holsterGO.transform.Find("HolsterVisual");
+            if (holsterRingTrans == null)
+            {
+                GameObject ringGO = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+                ringGO.name = "HolsterVisual";
+                ringGO.transform.SetParent(holsterGO.transform, false);
+                ringGO.transform.localPosition = new Vector3(0f, -0.03f, 0f);
+                ringGO.transform.localScale = new Vector3(0.06f, 0.008f, 0.06f);
+                Collider extraCol = ringGO.GetComponent<Collider>();
+                if (extraCol != null) DestroyImmediate(extraCol);
+            }
+
+            Transform trigTrans = perfRootGO.transform.Find("PerformerTrigger");
+            GameObject trigGO = trigTrans != null ? trigTrans.gameObject : new GameObject("PerformerTrigger");
+            trigGO.transform.SetParent(perfRootGO.transform, false);
+            if (trigTrans == null)
+            {
+                trigGO.transform.position = holsterGO.transform.position;
+                trigGO.transform.rotation = holsterGO.transform.rotation;
+                trigGO.transform.localScale = Vector3.one;
+            }
+
+            Rigidbody trigRb = trigGO.GetComponent<Rigidbody>();
+            if (trigRb == null) trigRb = trigGO.AddComponent<Rigidbody>();
+            trigRb.isKinematic = true;
+            trigRb.useGravity = false;
+
+            SphereCollider trigCol = trigGO.GetComponent<SphereCollider>();
+            if (trigCol == null) trigCol = trigGO.AddComponent<SphereCollider>();
+            trigCol.isTrigger = false;
+            trigCol.radius = 0.045f;
+
+            VRCPickup trigPickup = trigGO.GetComponent<VRCPickup>();
+            if (trigPickup == null) trigPickup = trigGO.AddComponent<VRCPickup>();
+            trigPickup.pickupable = true;
+            trigPickup.AutoHold = VRC_Pickup.AutoHoldMode.Yes;
+            trigPickup.InteractionText = "Performer Trigger";
+            trigPickup.UseText = "Fire Next Cue";
+
+            Transform trigMeshTrans = trigGO.transform.Find("TriggerMesh");
+            if (trigMeshTrans == null)
+            {
+                GameObject trigMeshGO = GameObject.CreatePrimitive(PrimitiveType.Capsule);
+                trigMeshGO.name = "TriggerMesh";
+                trigMeshGO.transform.SetParent(trigGO.transform, false);
+                trigMeshGO.transform.localPosition = Vector3.zero;
+                trigMeshGO.transform.localRotation = Quaternion.identity;
+                trigMeshGO.transform.localScale = new Vector3(0.042f, 0.055f, 0.042f);
+                Collider extraCol = trigMeshGO.GetComponent<Collider>();
+                if (extraCol != null) DestroyImmediate(extraCol);
+            }
+
+            SSSPerformerTrigger perfTrigger = trigGO.GetComponent<SSSPerformerTrigger>();
+            if (perfTrigger == null)
+            {
+                perfTrigger = trigGO.AddUdonSharpComponent<SSSPerformerTrigger>();
+                VRC.Udon.UdonBehaviour trigBacking = UdonSharpEditorUtility.GetBackingUdonBehaviour(perfTrigger);
+                if (trigBacking != null) trigBacking.SyncMethod = Networking.SyncType.None;
+            }
+            if (perfTrigger != null)
+            {
+                SerializedObject trigSO = new SerializedObject(perfTrigger);
+                trigSO.Update();
+                trigSO.FindProperty("_performerUIController").objectReferenceValue = performerUI;
+                trigSO.FindProperty("_holsterTransform").objectReferenceValue = holsterGO.transform;
+                trigSO.FindProperty("_pickup").objectReferenceValue = trigPickup;
+                trigSO.FindProperty("_rigidbody").objectReferenceValue = trigRb;
+                trigSO.FindProperty("_pickupCollider").objectReferenceValue = trigCol;
+                trigSO.ApplyModifiedPropertiesWithoutUndo();
+                UdonSharpEditorUtility.CopyProxyToUdon(perfTrigger);
+            }
+
+            // 5. Canvas [Canvas, CanvasScaler, GraphicRaycaster, VRCUiShape] & 3状態パネルの構築
+            BuildPerformerCanvasHierarchy(
+                root,
+                perfRootGO.transform,
+                out Canvas perfCanvas,
+                out GameObject standbyPanelGO,
+                out GameObject loadingPanelGO,
+                out GameObject playingPanelGO,
+                out Text nextCueText,
+                out Toggle ignoreThresholdToggle,
+                out Toggle ignorePerformerToggle,
+                out Toggle posLockToggle,
+                out Text loadingDirText,
+                out Text loadingProgText,
+                out Button forceStartBtn,
+                out Button cancelLoadBtn,
+                out Text playingDirText,
+                out Toggle unlockStopToggle,
+                out Button emergencyStopBtn);
+
+            performerUISO = new SerializedObject(performerUI);
+            performerUISO.Update();
+
+            performerUISO.FindProperty("_sssCore").objectReferenceValue = sssCore;
+            performerUISO.FindProperty("_mainUIController").objectReferenceValue = uiController;
+            performerUISO.FindProperty("_performerTrigger").objectReferenceValue = perfTrigger;
+            performerUISO.FindProperty("_proximityChecker").objectReferenceValue = proxChecker;
+            performerUISO.FindProperty("_parentPickup").objectReferenceValue = parentPickup;
+            performerUISO.FindProperty("_parentPickupCollider").objectReferenceValue = parentCol;
+            performerUISO.FindProperty("_parentRigidbody").objectReferenceValue = parentRb;
+            performerUISO.FindProperty("_targetCanvas").objectReferenceValue = perfCanvas;
+            performerUISO.FindProperty("_standbyPanel").objectReferenceValue = standbyPanelGO;
+            performerUISO.FindProperty("_loadingPanel").objectReferenceValue = loadingPanelGO;
+            performerUISO.FindProperty("_playingPanel").objectReferenceValue = playingPanelGO;
+
+            AssignIfNull(performerUISO, "_nextCueText", nextCueText);
+            AssignIfNull(performerUISO, "_ignoreThresholdToggle", ignoreThresholdToggle);
+            AssignIfNull(performerUISO, "_ignorePerformerErrorToggle", ignorePerformerToggle);
+            AssignIfNull(performerUISO, "_positionLockToggle", posLockToggle);
+            AssignIfNull(performerUISO, "_lockVisualIndicator", lockIndGO);
+
+            AssignIfNull(performerUISO, "_loadingDirectionText", loadingDirText);
+            AssignIfNull(performerUISO, "_loadingProgressText", loadingProgText);
+            AssignIfNull(performerUISO, "_forceStartNowButton", forceStartBtn);
+            AssignIfNull(performerUISO, "_cancelLoadingButton", cancelLoadBtn);
+
+            AssignIfNull(performerUISO, "_playingDirectionText", playingDirText);
+            AssignIfNull(performerUISO, "_unlockEmergencyStopToggle", unlockStopToggle);
+            AssignIfNull(performerUISO, "_emergencyStopButton", emergencyStopBtn);
+
+            performerUISO.ApplyModifiedPropertiesWithoutUndo();
+
+            VRC.Udon.UdonBehaviour perfUdon = UdonSharpEditorUtility.GetBackingUdonBehaviour(performerUI);
+            if (perfUdon != null)
+            {
+                ConfigureToggleForUdon(performerUISO.FindProperty("_ignoreThresholdToggle")?.objectReferenceValue as Toggle, perfUdon, "OnForceLaunchToggleChanged", clearGroup: true);
+                ConfigureToggleForUdon(performerUISO.FindProperty("_ignorePerformerErrorToggle")?.objectReferenceValue as Toggle, perfUdon, "OnForceLaunchToggleChanged", clearGroup: true);
+                ConfigureToggleForUdon(performerUISO.FindProperty("_positionLockToggle")?.objectReferenceValue as Toggle, perfUdon, "OnPositionLockToggleChanged", clearGroup: true);
+
+                ConfigureButtonForUdon(performerUISO.FindProperty("_forceStartNowButton")?.objectReferenceValue as Button, perfUdon, "OnForceStartNowClicked");
+                ConfigureButtonForUdon(performerUISO.FindProperty("_cancelLoadingButton")?.objectReferenceValue as Button, perfUdon, "OnCancelLoadingClicked");
+
+                ConfigureToggleForUdon(performerUISO.FindProperty("_unlockEmergencyStopToggle")?.objectReferenceValue as Toggle, perfUdon, "OnUnlockEmergencyStopToggleChanged", clearGroup: true);
+                ConfigureButtonForUdon(performerUISO.FindProperty("_emergencyStopButton")?.objectReferenceValue as Button, perfUdon, "OnEmergencyStopClicked", interactable: false);
+            }
+
+            // DirectionController, SSSCore, SSSUIController へ相互参照を保存
+            if (dirControllerSO != null)
+            {
+                dirControllerSO.Update();
+                SerializedProperty dcPerfProp = dirControllerSO.FindProperty("_performerUIController");
+                if (dcPerfProp != null) dcPerfProp.objectReferenceValue = performerUI;
+                dirControllerSO.ApplyModifiedPropertiesWithoutUndo();
+            }
+
+            if (sssCoreSO != null)
+            {
+                sssCoreSO.Update();
+                SerializedProperty corePerfProp = sssCoreSO.FindProperty("_performerUIController");
+                if (corePerfProp != null) corePerfProp.objectReferenceValue = performerUI;
+                sssCoreSO.ApplyModifiedPropertiesWithoutUndo();
+            }
+
+            if (uiControllerSO != null && uiController != null)
+            {
+                uiControllerSO.Update();
+                SerializedProperty uiPerfProp = uiControllerSO.FindProperty("_performerUIController");
+                if (uiPerfProp != null) uiPerfProp.objectReferenceValue = performerUI;
+                uiControllerSO.ApplyModifiedPropertiesWithoutUndo();
+                UdonSharpEditorUtility.CopyProxyToUdon(uiController);
+            }
+
+            UdonSharpEditorUtility.CopyProxyToUdon(performerUI);
+        }
+
+        private static void BuildPerformerCanvasHierarchy(
+            Transform sssRoot,
+            Transform perfRoot,
+            out Canvas canvas,
+            out GameObject standbyPanel,
+            out GameObject loadingPanel,
+            out GameObject playingPanel,
+            out Text nextCueText,
+            out Toggle ignoreThresholdToggle,
+            out Toggle ignorePerformerToggle,
+            out Toggle posLockToggle,
+            out Text loadingDirText,
+            out Text loadingProgText,
+            out Button forceStartBtn,
+            out Button cancelLoadBtn,
+            out Text playingDirText,
+            out Toggle unlockStopToggle,
+            out Button emergencyStopBtn)
+        {
+            Font font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+            if (font == null) font = Resources.GetBuiltinResource<Font>("Arial.ttf");
+
+            Transform canvasTrans = perfRoot.Find("Canvas");
+            GameObject canvasGO = canvasTrans != null ? canvasTrans.gameObject : new GameObject("Canvas");
+            canvasGO.transform.SetParent(perfRoot, false);
+
+            canvas = canvasGO.GetComponent<Canvas>();
+            if (canvas == null) canvas = canvasGO.AddComponent<Canvas>();
+            canvas.renderMode = RenderMode.WorldSpace;
+
+            CanvasScaler scaler = canvasGO.GetComponent<CanvasScaler>();
+            if (scaler == null) scaler = canvasGO.AddComponent<CanvasScaler>();
+            scaler.dynamicPixelsPerUnit = 10f;
+
+            if (canvasGO.GetComponent<GraphicRaycaster>() == null)
+            {
+                canvasGO.AddComponent<GraphicRaycaster>();
+            }
+            if (canvasGO.GetComponent<VRCUiShape>() == null)
+            {
+                canvasGO.AddComponent<VRCUiShape>();
+            }
+
+            RectTransform canvasRect = canvasGO.GetComponent<RectTransform>();
+            if (canvasTrans == null && canvasRect != null)
+            {
+                canvasRect.localPosition = Vector3.zero;
+                canvasRect.localRotation = Quaternion.identity;
+                canvasRect.localScale = new Vector3(0.0005f, 0.0005f, 0.0005f);
+                canvasRect.sizeDelta = new Vector2(920f, 880f);
+            }
+
+            // 背景フレーム
+            Transform bgTrans = canvasGO.transform.Find("Background");
+            if (bgTrans == null)
+            {
+                GameObject bgGO = CreateUIElement("Background", canvasGO.transform);
+                SetStretchRect(bgGO.GetComponent<RectTransform>(), 0f, 0f, 0f, 0f);
+                Image bgImg = bgGO.AddComponent<Image>();
+                bgImg.color = new Color(0.07f, 0.08f, 0.11f, 0.94f);
+
+                GameObject headerGO = CreateUIElement("Header", bgGO.transform);
+                RectTransform headerRect = headerGO.GetComponent<RectTransform>();
+                headerRect.anchorMin = new Vector2(0f, 1f);
+                headerRect.anchorMax = new Vector2(1f, 1f);
+                headerRect.pivot = new Vector2(0.5f, 1f);
+                headerRect.anchoredPosition = Vector2.zero;
+                headerRect.sizeDelta = new Vector2(0f, 54f);
+                Image headerImg = headerGO.AddComponent<Image>();
+                headerImg.color = new Color(0.14f, 0.16f, 0.24f, 1f);
+
+                Text headerTxt = CreateTextElement("HeaderTitle", headerGO.transform, font, "PERFORMER PORTABLE UI", 22, TextAnchor.MiddleCenter, Color.white);
+                headerTxt.fontStyle = FontStyle.Bold;
+                SetStretchRect(headerTxt.GetComponent<RectTransform>(), 12f, 0f, -12f, 0f);
+            }
+
+            // 1. StandbyPanel
+            Transform standbyTrans = canvasGO.transform.Find("StandbyPanel");
+            standbyPanel = standbyTrans != null ? standbyTrans.gameObject : CreateUIElement("StandbyPanel", canvasGO.transform);
+            if (standbyTrans == null)
+            {
+                SetStretchRect(standbyPanel.GetComponent<RectTransform>(), 20f, 16f, -20f, -68f);
+            }
+
+            nextCueText = FindComponent<Text>(standbyPanel.transform, "NextCueBanner/NextCueText");
+            if (nextCueText == null)
+            {
+                GameObject cueBanner = CreateUIElement("NextCueBanner", standbyPanel.transform);
+                RectTransform cueRect = cueBanner.GetComponent<RectTransform>();
+                cueRect.anchorMin = new Vector2(0f, 1f);
+                cueRect.anchorMax = new Vector2(1f, 1f);
+                cueRect.pivot = new Vector2(0.5f, 1f);
+                cueRect.anchoredPosition = Vector2.zero;
+                cueRect.sizeDelta = new Vector2(0f, 52f);
+                Image cueBg = cueBanner.AddComponent<Image>();
+                cueBg.color = new Color(0.12f, 0.20f, 0.34f, 1f);
+
+                nextCueText = CreateTextElement("NextCueText", cueBanner.transform, font, "Next Cue: (Select Direction)", 24, TextAnchor.MiddleLeft, new Color(0.4f, 0.95f, 1f, 1f));
+                nextCueText.fontStyle = FontStyle.Bold;
+                SetStretchRect(nextCueText.GetComponent<RectTransform>(), 16f, 4f, -16f, -4f);
+            }
+
+            // StandbyPanel Scroll View & DirectionSW template
+            Transform scrollTrans = standbyPanel.transform.Find("Scroll View");
+            if (scrollTrans == null)
+            {
+                BuildPlaylistScrollView(sssRoot, standbyPanel.transform, font);
+            }
+
+            ignoreThresholdToggle = FindComponent<Toggle>(standbyPanel.transform, "BottomControls/IgnoreThresholdToggle");
+            ignorePerformerToggle = FindComponent<Toggle>(standbyPanel.transform, "BottomControls/IgnorePerformerErrorToggle");
+            posLockToggle = FindComponent<Toggle>(standbyPanel.transform, "BottomControls/PositionLockToggle");
+            if (ignoreThresholdToggle == null || ignorePerformerToggle == null || posLockToggle == null)
+            {
+                Transform bottomTrans = standbyPanel.transform.Find("BottomControls");
+                GameObject bottomGO = bottomTrans != null ? bottomTrans.gameObject : CreateUIElement("BottomControls", standbyPanel.transform);
+                RectTransform bottomRect = bottomGO.GetComponent<RectTransform>();
+                bottomRect.anchorMin = new Vector2(0f, 0f);
+                bottomRect.anchorMax = new Vector2(1f, 0f);
+                bottomRect.pivot = new Vector2(0.5f, 0f);
+                bottomRect.anchoredPosition = Vector2.zero;
+                bottomRect.sizeDelta = new Vector2(0f, 196f);
+
+                if (ignoreThresholdToggle == null)
+                {
+                    ignoreThresholdToggle = CreateLabeledToggleRow("IgnoreThresholdToggle", bottomGO.transform, font, "Force Launch: Ignore Audience Threshold (Main UI Linked)", 134f, false);
+                }
+                if (ignorePerformerToggle == null)
+                {
+                    ignorePerformerToggle = CreateLabeledToggleRow("IgnorePerformerErrorToggle", bottomGO.transform, font, "Force Launch: Ignore Performer Error (Main UI Linked)", 70f, false);
+                }
+                if (posLockToggle == null)
+                {
+                    posLockToggle = CreateLabeledToggleRow("PositionLockToggle", bottomGO.transform, font, "Lock Panel Position (Prevent Accidental Grab)", 6f, false);
+                }
+            }
+
+            // 2. LoadingPanel
+            Transform loadingTrans = canvasGO.transform.Find("LoadingPanel");
+            loadingPanel = loadingTrans != null ? loadingTrans.gameObject : CreateUIElement("LoadingPanel", canvasGO.transform);
+            if (loadingTrans == null)
+            {
+                SetStretchRect(loadingPanel.GetComponent<RectTransform>(), 28f, 24f, -28f, -74f);
+                loadingPanel.SetActive(false);
+            }
+
+            loadingDirText = FindComponent<Text>(loadingPanel.transform, "LoadingDirectionText");
+            if (loadingDirText == null)
+            {
+                loadingDirText = CreateTextElement("LoadingDirectionText", loadingPanel.transform, font, "Loading: ---", 28, TextAnchor.MiddleCenter, Color.white);
+                loadingDirText.fontStyle = FontStyle.Bold;
+                RectTransform r = loadingDirText.GetComponent<RectTransform>();
+                r.anchorMin = new Vector2(0f, 0.76f);
+                r.anchorMax = new Vector2(1f, 0.92f);
+                r.offsetMin = Vector2.zero;
+                r.offsetMax = Vector2.zero;
+            }
+
+            loadingProgText = FindComponent<Text>(loadingPanel.transform, "LoadingProgressText");
+            if (loadingProgText == null)
+            {
+                loadingProgText = CreateTextElement("LoadingProgressText", loadingPanel.transform, font, "Loaded: 0/0", 48, TextAnchor.MiddleCenter, new Color(0.35f, 1f, 0.65f, 1f));
+                loadingProgText.fontStyle = FontStyle.Bold;
+                RectTransform r = loadingProgText.GetComponent<RectTransform>();
+                r.anchorMin = new Vector2(0f, 0.52f);
+                r.anchorMax = new Vector2(1f, 0.74f);
+                r.offsetMin = Vector2.zero;
+                r.offsetMax = Vector2.zero;
+            }
+
+            forceStartBtn = FindComponent<Button>(loadingPanel.transform, "ForceStartNowButton");
+            if (forceStartBtn == null)
+            {
+                forceStartBtn = CreateActionButton("ForceStartNowButton", loadingPanel.transform, font, "FORCE START NOW", 30, new Color(0.85f, 0.48f, 0.10f, 1f));
+                RectTransform r = forceStartBtn.GetComponent<RectTransform>();
+                r.anchorMin = new Vector2(0.08f, 0.27f);
+                r.anchorMax = new Vector2(0.92f, 0.45f);
+                r.offsetMin = Vector2.zero;
+                r.offsetMax = Vector2.zero;
+            }
+
+            cancelLoadBtn = FindComponent<Button>(loadingPanel.transform, "CancelLoadingButton");
+            if (cancelLoadBtn == null)
+            {
+                cancelLoadBtn = CreateActionButton("CancelLoadingButton", loadingPanel.transform, font, "CANCEL (ABORT)", 26, new Color(0.55f, 0.18f, 0.20f, 1f));
+                RectTransform r = cancelLoadBtn.GetComponent<RectTransform>();
+                r.anchorMin = new Vector2(0.08f, 0.06f);
+                r.anchorMax = new Vector2(0.92f, 0.22f);
+                r.offsetMin = Vector2.zero;
+                r.offsetMax = Vector2.zero;
+            }
+
+            // 3. PlayingPanel
+            Transform playingTrans = canvasGO.transform.Find("PlayingPanel");
+            playingPanel = playingTrans != null ? playingTrans.gameObject : CreateUIElement("PlayingPanel", canvasGO.transform);
+            if (playingTrans == null)
+            {
+                SetStretchRect(playingPanel.GetComponent<RectTransform>(), 28f, 24f, -28f, -74f);
+                playingPanel.SetActive(false);
+            }
+
+            playingDirText = FindComponent<Text>(playingPanel.transform, "PlayingDirectionText");
+            if (playingDirText == null)
+            {
+                playingDirText = CreateTextElement("PlayingDirectionText", playingPanel.transform, font, "Playing: ---", 30, TextAnchor.MiddleCenter, new Color(0.4f, 1f, 0.7f, 1f));
+                playingDirText.fontStyle = FontStyle.Bold;
+                RectTransform r = playingDirText.GetComponent<RectTransform>();
+                r.anchorMin = new Vector2(0f, 0.74f);
+                r.anchorMax = new Vector2(1f, 0.92f);
+                r.offsetMin = Vector2.zero;
+                r.offsetMax = Vector2.zero;
+            }
+
+            unlockStopToggle = FindComponent<Toggle>(playingPanel.transform, "UnlockEmergencyStopToggle");
+            if (unlockStopToggle == null)
+            {
+                unlockStopToggle = CreateLabeledToggleRow("UnlockEmergencyStopToggle", playingPanel.transform, font, "Step 1: Unlock Emergency Stop Safety", 340f, false);
+            }
+
+            emergencyStopBtn = FindComponent<Button>(playingPanel.transform, "EmergencyStopButton");
+            if (emergencyStopBtn == null)
+            {
+                emergencyStopBtn = CreateActionButton("EmergencyStopButton", playingPanel.transform, font, "Step 2: EMERGENCY STOP STAGE", 32, new Color(0.82f, 0.15f, 0.18f, 1f));
+                emergencyStopBtn.interactable = false;
+                RectTransform r = emergencyStopBtn.GetComponent<RectTransform>();
+                r.anchorMin = new Vector2(0.06f, 0.12f);
+                r.anchorMax = new Vector2(0.94f, 0.36f);
+                r.offsetMin = Vector2.zero;
+                r.offsetMax = Vector2.zero;
+            }
+        }
+
+        private static void BuildPlaylistScrollView(Transform sssRoot, Transform standbyPanel, Font font)
+        {
+            GameObject scrollGO = CreateUIElement("Scroll View", standbyPanel);
+            RectTransform scrollRectTrans = scrollGO.GetComponent<RectTransform>();
+            scrollRectTrans.anchorMin = new Vector2(0f, 0f);
+            scrollRectTrans.anchorMax = new Vector2(1f, 1f);
+            scrollRectTrans.offsetMin = new Vector2(0f, 208f);
+            scrollRectTrans.offsetMax = new Vector2(0f, -62f);
+
+            Image scrollBg = scrollGO.AddComponent<Image>();
+            scrollBg.color = new Color(0.04f, 0.05f, 0.07f, 0.85f);
+
+            ScrollRect sr = scrollGO.AddComponent<ScrollRect>();
+            sr.horizontal = false;
+            sr.vertical = true;
+            sr.movementType = ScrollRect.MovementType.Clamped;
+            sr.scrollSensitivity = 25f;
+
+            GameObject viewportGO = CreateUIElement("Viewport", scrollGO.transform);
+            RectTransform vpRect = viewportGO.GetComponent<RectTransform>();
+            SetStretchRect(vpRect, 6f, 6f, -6f, -6f);
+            Image vpImg = viewportGO.AddComponent<Image>();
+            vpImg.color = new Color(1f, 1f, 1f, 0.01f);
+            Mask vpMask = viewportGO.AddComponent<Mask>();
+            vpMask.showMaskGraphic = false;
+
+            GameObject contentGO = CreateUIElement("Content", viewportGO.transform);
+            RectTransform contentRect = contentGO.GetComponent<RectTransform>();
+            contentRect.anchorMin = new Vector2(0f, 1f);
+            contentRect.anchorMax = new Vector2(1f, 1f);
+            contentRect.pivot = new Vector2(0.5f, 1f);
+            contentRect.anchoredPosition = Vector2.zero;
+            contentRect.sizeDelta = new Vector2(0f, 0f);
+
+            VerticalLayoutGroup vlg = contentGO.AddComponent<VerticalLayoutGroup>();
+            vlg.padding = new RectOffset(6, 6, 6, 6);
+            vlg.spacing = 8f;
+            vlg.childAlignment = TextAnchor.UpperCenter;
+            vlg.childControlWidth = true;
+            vlg.childControlHeight = false;
+            vlg.childForceExpandWidth = true;
+            vlg.childForceExpandHeight = false;
+
+            ContentSizeFitter csf = contentGO.AddComponent<ContentSizeFitter>();
+            csf.horizontalFit = ContentSizeFitter.FitMode.Unconstrained;
+            csf.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+
+            sr.viewport = vpRect;
+            sr.content = contentRect;
+
+            // メインUIの DirectionSW テンプレートが存在すれば複製し、なければ新規構築する
+            Transform mainBaseSW = sssRoot != null ? sssRoot.Find($"{_directionSWRootPath}/{_directionSW_BaseName}") : null;
+            if (mainBaseSW != null)
+            {
+                GameObject clonedBase = Instantiate(mainBaseSW.gameObject, contentGO.transform, false);
+                clonedBase.name = _directionSW_BaseName;
+                clonedBase.SetActive(false);
+            }
+            else
+            {
+                GameObject baseSW = CreateUIElement(_directionSW_BaseName, contentGO.transform);
+                RectTransform swRect = baseSW.GetComponent<RectTransform>();
+                swRect.sizeDelta = new Vector2(0f, 52f);
+                LayoutElement le = baseSW.AddComponent<LayoutElement>();
+                le.preferredHeight = 52f;
+
+                GameObject btnGO = CreateUIElement("Button", baseSW.transform);
+                SetStretchRect(btnGO.GetComponent<RectTransform>(), 0f, 0f, 0f, 0f);
+                Image btnImg = btnGO.AddComponent<Image>();
+                btnImg.color = new Color(0.18f, 0.20f, 0.26f, 1f);
+                Button btn = btnGO.AddComponent<Button>();
+                btn.targetGraphic = btnImg;
+
+                Text txt = CreateTextElement("Text", btnGO.transform, font, "Direction Title", 22, TextAnchor.MiddleLeft, Color.white);
+                SetStretchRect(txt.GetComponent<RectTransform>(), 16f, 0f, -16f, 0f);
+
+                baseSW.SetActive(false);
+            }
+        }
+
+        private static GameObject CreateUIElement(string name, Transform parent)
+        {
+            GameObject go = new GameObject(name, typeof(RectTransform));
+            go.transform.SetParent(parent, false);
+            return go;
+        }
+
+        private static void SetStretchRect(RectTransform rect, float left, float bottom, float right, float top)
+        {
+            if (rect == null) return;
+            rect.anchorMin = Vector2.zero;
+            rect.anchorMax = Vector2.one;
+            rect.offsetMin = new Vector2(left, bottom);
+            rect.offsetMax = new Vector2(right, top);
+        }
+
+        private static Text CreateTextElement(string name, Transform parent, Font font, string text, int fontSize, TextAnchor alignment, Color color)
+        {
+            GameObject go = CreateUIElement(name, parent);
+            Text uiText = go.AddComponent<Text>();
+            if (font != null) uiText.font = font;
+            uiText.text = text;
+            uiText.fontSize = fontSize;
+            uiText.alignment = alignment;
+            uiText.color = color;
+            uiText.horizontalOverflow = HorizontalWrapMode.Wrap;
+            uiText.verticalOverflow = VerticalWrapMode.Overflow;
+            return uiText;
+        }
+
+        private static Button CreateActionButton(string name, Transform parent, Font font, string label, int fontSize, Color bgColor)
+        {
+            GameObject go = CreateUIElement(name, parent);
+            Image bg = go.AddComponent<Image>();
+            bg.color = bgColor;
+
+            Button btn = go.AddComponent<Button>();
+            btn.targetGraphic = bg;
+
+            Text txt = CreateTextElement("Text", go.transform, font, label, fontSize, TextAnchor.MiddleCenter, Color.white);
+            txt.fontStyle = FontStyle.Bold;
+            SetStretchRect(txt.GetComponent<RectTransform>(), 12f, 4f, -12f, -4f);
+            return btn;
+        }
+
+        private static Toggle CreateLabeledToggleRow(string name, Transform parent, Font font, string label, float bottomOffset, bool defaultOn)
+        {
+            GameObject rowGO = CreateUIElement(name, parent);
+            RectTransform rowRect = rowGO.GetComponent<RectTransform>();
+            rowRect.anchorMin = new Vector2(0f, 0f);
+            rowRect.anchorMax = new Vector2(1f, 0f);
+            rowRect.pivot = new Vector2(0.5f, 0f);
+            rowRect.anchoredPosition = new Vector2(0f, bottomOffset);
+            rowRect.sizeDelta = new Vector2(0f, 56f);
+
+            Image rowBg = rowGO.AddComponent<Image>();
+            rowBg.color = new Color(0.13f, 0.15f, 0.20f, 0.95f);
+
+            Text lbl = CreateTextElement("Label", rowGO.transform, font, label, 20, TextAnchor.MiddleLeft, Color.white);
+            RectTransform lblRect = lbl.GetComponent<RectTransform>();
+            lblRect.anchorMin = new Vector2(0f, 0f);
+            lblRect.anchorMax = new Vector2(1f, 1f);
+            lblRect.offsetMin = new Vector2(16f, 4f);
+            lblRect.offsetMax = new Vector2(-120f, -4f);
+
+            // メインUIの UpdateSlideSwitchVisual と互換の "Toggle/Button" 階層を持つスライドスイッチ構造
+            GameObject slideBgGO = CreateUIElement("Toggle", rowGO.transform);
+            RectTransform slideRect = slideBgGO.GetComponent<RectTransform>();
+            slideRect.anchorMin = new Vector2(1f, 0.5f);
+            slideRect.anchorMax = new Vector2(1f, 0.5f);
+            slideRect.pivot = new Vector2(1f, 0.5f);
+            slideRect.anchoredPosition = new Vector2(-16f, 0f);
+            slideRect.sizeDelta = new Vector2(88f, 38f);
+            Image slideBgImg = slideBgGO.AddComponent<Image>();
+            slideBgImg.color = defaultOn ? new Color(0.31764707f, 0.1882353f, 0.81960785f, 1f) : new Color(0.8f, 0.8f, 0.8f, 1f);
+
+            GameObject knobGO = CreateUIElement("Button", slideBgGO.transform);
+            RectTransform knobRect = knobGO.GetComponent<RectTransform>();
+            knobRect.anchorMin = new Vector2(0.5f, 0.5f);
+            knobRect.anchorMax = new Vector2(0.5f, 0.5f);
+            knobRect.pivot = new Vector2(0.5f, 0.5f);
+            knobRect.anchoredPosition = new Vector2(defaultOn ? 23.8f : -23.8f, 0f);
+            knobRect.sizeDelta = new Vector2(32f, 32f);
+            Image knobImg = knobGO.AddComponent<Image>();
+            knobImg.color = defaultOn ? Color.white : new Color(0.34117648f, 0.34117648f, 0.34117648f, 1f);
+
+            Toggle toggle = rowGO.AddComponent<Toggle>();
+            toggle.targetGraphic = slideBgImg;
+            toggle.isOn = defaultOn;
+            return toggle;
+        }
         private void SetSSSCore(SerializedObject dirControllerSO, SSSCore sssCore)
         {
             dirControllerSO.Update();
@@ -762,7 +1666,7 @@ namespace AppleteaSystems.StageSyncSystem
         {
             if (_directionList == null || _directionList.Count <= 1) return;
             _directionList.Sort(comparison);
-            ApplyDirectionOrder(_directionController, directionController, _SSSCore, SSS_Core, _uiController, uiControllerSO, _directionList);
+            ApplyDirectionOrder(_directionController, directionController, _SSSCore, SSS_Core, _uiController, uiControllerSO, _directionList, _performerUIController, performerUIControllerSO);
         }
 
         public override void OnInspectorGUI()
@@ -913,7 +1817,7 @@ namespace AppleteaSystems.StageSyncSystem
                     _directionList.RemoveAt(_pendingMoveFrom);
                     _directionList.Insert(_pendingMoveTo, movedItem);
                     _reorderableList.index = _pendingMoveTo;
-                    ApplyDirectionOrder(_directionController, directionController, _SSSCore, SSS_Core, _uiController, uiControllerSO, _directionList);
+                    ApplyDirectionOrder(_directionController, directionController, _SSSCore, SSS_Core, _uiController, uiControllerSO, _directionList, _performerUIController, performerUIControllerSO);
                 }
             }
             EditorGUILayout.EndVertical();
@@ -958,7 +1862,7 @@ namespace AppleteaSystems.StageSyncSystem
                 if (t == coreTransform || coreTransform.IsChildOf(t) || t.IsChildOf(coreTransform)) return true;
             }
 
-            // 2. DirectionControllerルート・UI階層の保護
+            // 2. DirectionControllerルート・UI階層・演者端末階層の保護
             if (dirController != null)
             {
                 Transform dcTransform = dirController.transform;
@@ -966,11 +1870,17 @@ namespace AppleteaSystems.StageSyncSystem
 
                 Transform uiRoot = dcTransform.Find("UI");
                 if (uiRoot != null && (t == uiRoot || uiRoot.IsChildOf(t) || t.IsChildOf(uiRoot))) return true;
+
+                Transform perfUiRoot = dcTransform.Find(_performerRootObjectName);
+                if (perfUiRoot != null && (t == perfUiRoot || perfUiRoot.IsChildOf(t) || t.IsChildOf(perfUiRoot))) return true;
             }
 
             // 3. SSS主要コンポーネント・動画プレイヤー・演出コンポーネントを含むオブジェクト（または親・子階層）の保護
             if (obj.GetComponentInChildren<SSSCore>(true) != null || obj.GetComponentInParent<SSSCore>(true) != null) return true;
             if (obj.GetComponentInChildren<SSSUIController>(true) != null || obj.GetComponentInParent<SSSUIController>(true) != null) return true;
+            if (obj.GetComponentInChildren<SSSPerformerUIController>(true) != null || obj.GetComponentInParent<SSSPerformerUIController>(true) != null) return true;
+            if (obj.GetComponentInChildren<SSSPerformerTrigger>(true) != null || obj.GetComponentInParent<SSSPerformerTrigger>(true) != null) return true;
+            if (obj.GetComponentInChildren<SSSPerformerProximityChecker>(true) != null || obj.GetComponentInParent<SSSPerformerProximityChecker>(true) != null) return true;
             if (obj.GetComponentInChildren<DirectionController>(true) != null) return true;
             if (obj.GetComponentInChildren<DirectionObject>(true) != null || obj.GetComponentInParent<DirectionObject>(true) != null) return true;
             if (obj.GetComponentInChildren<DirectionSwitch>(true) != null || obj.GetComponentInParent<DirectionSwitch>(true) != null) return true;
@@ -1058,6 +1968,15 @@ namespace AppleteaSystems.StageSyncSystem
                     sssCoreSO,
                     out SSSUIController uiController,
                     out SerializedObject uiControllerSO);
+                StageSyncSystem_Editor.SetupPerformerPortableUI(
+                    dirController,
+                    dirControllerSO,
+                    sssCore,
+                    sssCoreSO,
+                    uiController,
+                    uiControllerSO,
+                    out SSSPerformerUIController performerUI,
+                    out SerializedObject performerUISO);
                 StageSyncSystem_Editor.ApplyDirectionOrder(
                     dirController,
                     dirControllerSO,
@@ -1065,12 +1984,136 @@ namespace AppleteaSystems.StageSyncSystem
                     sssCoreSO,
                     uiController,
                     uiControllerSO,
-                    directions);
+                    directions,
+                    performerUI,
+                    performerUISO);
             }
             else if (directions != null && directions.Count > 0)
             {
                 StageSyncSystem_Editor.SettingDirection_Core(sssCoreSO, directions);
                 UdonSharpEditorUtility.CopyProxyToUdon(sssCore);
+            }
+        }
+    }
+
+    /// <summary>
+    /// シーン上に Stage Sync System が存在する場合、新規UdonSharpProgramAssetの生成・コンパイル完了後に
+    /// 演者用操作端末 (Performer Portable UI) のHierarchy構築および演出リスト結線を自動実行するエディタ初期化クラス。
+    /// </summary>
+    [InitializeOnLoad]
+    public static class SSSPerformerPortableUI_AutoSetup
+    {
+        private const string AutoSetupSessionKey = "SSS_PerformerPortableUI_AutoSetupDone";
+
+        static SSSPerformerPortableUI_AutoSetup()
+        {
+            EditorApplication.delayCall += TryAutoSetup;
+        }
+
+        private static void TryAutoSetup()
+        {
+            if (EditorApplication.isPlayingOrWillChangePlaymode || EditorApplication.isCompiling || EditorApplication.isUpdating)
+            {
+                EditorApplication.delayCall += TryAutoSetup;
+                return;
+            }
+
+            if (SessionState.GetBool(AutoSetupSessionKey, false))
+            {
+                return;
+            }
+
+            DirectionController dirController = StageSyncSystem_Editor.GetSSSCore()?.GetComponentInParent<DirectionController>();
+            if (dirController == null)
+            {
+                dirController = UnityEngine.Object.FindObjectOfType<DirectionController>(true);
+            }
+            if (dirController == null)
+            {
+                return;
+            }
+
+            if (!StageSyncSystem_Editor.EnsurePerformerProgramAssetsReady())
+            {
+                EditorApplication.delayCall += TryAutoSetup;
+                return;
+            }
+
+            SessionState.SetBool(AutoSetupSessionKey, true);
+            ExecuteSetup(dirController, false);
+        }
+
+        [MenuItem("Tools/Stage Sync System/Setup Performer Portable UI")]
+        public static void SetupPerformerPortableUIMenu()
+        {
+            DirectionController dirController = UnityEngine.Object.FindObjectOfType<DirectionController>(true);
+            if (dirController == null)
+            {
+                Debug.LogWarning("[Stage Sync System] シーン内に DirectionController が見つかりません。");
+                return;
+            }
+
+            if (!StageSyncSystem_Editor.EnsurePerformerProgramAssetsReady())
+            {
+                SessionState.SetBool(AutoSetupSessionKey, false);
+                EditorApplication.delayCall += TryAutoSetup;
+                return;
+            }
+
+            ExecuteSetup(dirController, true);
+        }
+
+        private static void ExecuteSetup(DirectionController dirController, bool selectObject)
+        {
+            SSSCore sssCore = StageSyncSystem_Editor.GetSSSCore(dirController);
+            if (sssCore == null) return;
+
+            SerializedObject dirControllerSO = new SerializedObject(dirController);
+            SerializedObject sssCoreSO = new SerializedObject(sssCore);
+
+            Controller yamaController = StageSyncSystem_Editor.GetYamaPlayerController();
+            VideoCore iwasyncCore = StageSyncSystem_Editor.GetIwasyncCore();
+
+            StageSyncSystem_Editor.SetVideoPlayers(yamaController, iwasyncCore, sssCoreSO);
+            StageSyncSystem_Editor.SetupBridges(sssCore, yamaController, iwasyncCore, sssCoreSO);
+            StageSyncSystem_Editor.SetupUIController(
+                dirController,
+                dirControllerSO,
+                sssCore,
+                sssCoreSO,
+                out SSSUIController uiController,
+                out SerializedObject uiControllerSO);
+            StageSyncSystem_Editor.SetupPerformerPortableUI(
+                dirController,
+                dirControllerSO,
+                sssCore,
+                sssCoreSO,
+                uiController,
+                uiControllerSO,
+                out SSSPerformerUIController performerUI,
+                out SerializedObject performerUISO);
+
+            StageSyncSystem_Editor.GetSyncedDirectionList(sssCoreSO, out List<DirectionObject> directions);
+            StageSyncSystem_Editor.ApplyDirectionOrder(
+                dirController,
+                dirControllerSO,
+                sssCore,
+                sssCoreSO,
+                uiController,
+                uiControllerSO,
+                directions,
+                performerUI,
+                performerUISO);
+
+            if (performerUI != null)
+            {
+                EditorSceneManager.MarkSceneDirty(performerUI.gameObject.scene);
+                EditorSceneManager.SaveOpenScenes();
+                if (selectObject)
+                {
+                    Selection.activeGameObject = performerUI.gameObject;
+                }
+                Debug.Log("[Stage Sync System] 'Performer Portable UI' の構築・演出リスト結線を完了し、シーンを保存しました。");
             }
         }
     }

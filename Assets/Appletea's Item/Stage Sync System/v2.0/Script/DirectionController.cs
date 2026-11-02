@@ -14,6 +14,9 @@ namespace AppleteaSystems.StageSyncSystem
         [SerializeField]
         SSSUIController _uiController;
 
+        [SerializeField]
+        SSSPerformerUIController _performerUIController;
+
         public SSSCore SSSCore
         {
             get => SSS_core;
@@ -24,6 +27,12 @@ namespace AppleteaSystems.StageSyncSystem
         {
             get => _uiController;
             set => _uiController = value;
+        }
+
+        public SSSPerformerUIController PerformerUIController
+        {
+            get => _performerUIController;
+            set => _performerUIController = value;
         }
 
         // 既存UIボタンイベントからの互換転送用（実処理はSSSUIControllerへ移行済み）

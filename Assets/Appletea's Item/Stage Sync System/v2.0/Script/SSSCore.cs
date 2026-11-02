@@ -40,6 +40,9 @@ namespace AppleteaSystems.StageSyncSystem
         [SerializeField, HideInInspector]
         SSSUIController _uiController;
 
+        [SerializeField, HideInInspector]
+        SSSPerformerUIController _performerUIController;
+
         [Header("General Settings")]
         [SerializeField]
         DirectionObject[] _directions;
@@ -176,6 +179,12 @@ namespace AppleteaSystems.StageSyncSystem
             set => _uiController = value;
         }
 
+        public SSSPerformerUIController PerformerUIController
+        {
+            get => _performerUIController;
+            set => _performerUIController = value;
+        }
+
         public VideoPlayerType PlayerType
         {
             get => _videoPlayerType;
@@ -183,6 +192,7 @@ namespace AppleteaSystems.StageSyncSystem
         }
 
         public float NetworkDelay => _networkDelay;
+        public int PlaybackSessionId => _playbackSessionId;
         public bool IsWaitingForReady => _isWaitingForReady;
         public bool IsStagePlaying => _isStagePlaying;
         public bool IsLoadingOrPlaying => _isWaitingForReady || _isStagePlaying;
@@ -274,6 +284,10 @@ namespace AppleteaSystems.StageSyncSystem
                 ApplyOffset();
                 ApplyPerformerObjects();
                 SyncLocalPerformerState();
+                if (_performerUIController != null)
+                {
+                    _performerUIController.OnPerformerRoleChanged(_isPerformer);
+                }
                 if (_isStagePlaying && !_isWaitingForReady && IsVideoPlayerPlaying())
                 {
                     SeekLocalVideoToCurrentStageTime();
@@ -375,6 +389,11 @@ namespace AppleteaSystems.StageSyncSystem
             if (_uiController != null)
             {
                 _uiController.RefreshDelayStatusUI();
+            }
+
+            if (_performerUIController != null)
+            {
+                _performerUIController.RefreshViewState();
             }
         }
 
@@ -495,6 +514,11 @@ namespace AppleteaSystems.StageSyncSystem
             if (_uiController != null)
             {
                 _uiController.RefreshDelayStatusUI();
+            }
+
+            if (_performerUIController != null)
+            {
+                _performerUIController.RefreshViewState();
             }
         }
 
@@ -706,15 +730,26 @@ namespace AppleteaSystems.StageSyncSystem
             _isStagePlaying = false;
             StopAllDirections();
             OnStagePlaybackEnded();
+
+            if (_performerUIController != null)
+            {
+                _performerUIController.OnStagePlaybackAborted(_playbackSessionId);
+            }
         }
 
         public override void OnVideoEnd()
         {
+            int completedObjectIndex = _playingObjectIndex;
             _isWaitingForReady = false;
             _isStagePlaying = false;
             RestoreVideoPlayerVolume();
             StopAllDirections();
             OnStagePlaybackEnded();
+
+            if (_performerUIController != null)
+            {
+                _performerUIController.OnStagePlaybackCompleted(completedObjectIndex);
+            }
 
             if (Networking.IsOwner(gameObject))
             {
@@ -1008,6 +1043,11 @@ namespace AppleteaSystems.StageSyncSystem
             {
                 _uiController.RefreshDelayStatusUI();
             }
+
+            if (_performerUIController != null)
+            {
+                _performerUIController.OnStageLoadingBegan(objectIndex, sessionId);
+            }
         }
 
         private void ReportLocalPlayerReady()
@@ -1191,6 +1231,11 @@ namespace AppleteaSystems.StageSyncSystem
                 );
             }
 
+            if (_performerUIController != null)
+            {
+                _performerUIController.OnLoadProgressUpdated(readyCount, totalExpected);
+            }
+
             // 1. 演者が1人でも読み込み失敗（またはタイムアウト未完了）している場合は割合に関係なく再生中止（Force Launchで無効化されていない場合）
             if (performerFailed && !_ignorePerformerError)
             {
@@ -1215,9 +1260,15 @@ namespace AppleteaSystems.StageSyncSystem
             // 3. 全員の応答が揃った場合、またはタイムアウト時点で中止条件に該当しなかった場合は再生開始
             if (isTimeout || (readyCount + failedCount >= totalExpected))
             {
-                if (_uiController != null) _uiController.ConsumeForceLaunchIfOnce();
-                BeginSynchronizedStagePlayback();
+                TriggerStagePlaybackLaunch();
             }
+        }
+
+        private void TriggerStagePlaybackLaunch()
+        {
+            if (!Networking.IsOwner(gameObject) || !_isWaitingForReady) return;
+            if (_uiController != null) _uiController.ConsumeForceLaunchIfOnce();
+            BeginSynchronizedStagePlayback();
         }
 
         public void CheckReadyTimeout()
@@ -1312,6 +1363,74 @@ namespace AppleteaSystems.StageSyncSystem
         }
 
         [NetworkCallable(100)]
+        public void NetRequestStartFromPerformer(int objectIndex, bool ignoreThreshold, bool ignorePerformerError)
+        {
+            if (!Networking.IsOwner(gameObject)) return;
+            // 既にロード待機中または上演中の場合は二重発火を防止
+            if (_isWaitingForReady || _isStagePlaying) return;
+            if (_directions == null || objectIndex < 0 || objectIndex >= _directions.Length) return;
+            if (_directions[objectIndex] == null) return;
+
+            // メインUIへ操作指示を反映し、メインUIを操作した場合と完全に同等の処理を実行する
+            if (_uiController != null)
+            {
+                _uiController.ApplyForceLaunchFromPerformerRequest(ignoreThreshold, ignorePerformerError);
+            }
+            _ignoreThresholdError = ignoreThreshold;
+            _ignorePerformerError = ignorePerformerError;
+
+            StartHandling(objectIndex);
+        }
+
+        [NetworkCallable(100)]
+        public void NetRequestForceLaunchNow(int sessionId)
+        {
+            if (!Networking.IsOwner(gameObject)) return;
+            // セッションID不一致、またはロード待機中でない場合は無視
+            if (!_isWaitingForReady || _playbackSessionId != sessionId) return;
+
+            // エラー判定をバイパスして直ちに上演開始を発火
+            TriggerStagePlaybackLaunch();
+        }
+
+        [NetworkCallable(100)]
+        public void NetRequestStopFromPerformer(int sessionId)
+        {
+            if (!Networking.IsOwner(gameObject)) return;
+            if (_playbackSessionId != sessionId) return;
+            if (!_isWaitingForReady && !_isStagePlaying) return;
+
+            if (_isWaitingForReady)
+            {
+                AbortSynchronizedStagePlayback();
+            }
+            else
+            {
+                _isWaitingForReady = false;
+                _isStagePlaying = false;
+                _isWaitingForCooldownLoad = false;
+                _pendingLoadSessionId = -1;
+                _playingObjectIndex = -1;
+                _stageStartServerTime = 0;
+                _stageStartedInFallback = false;
+                RequestSerialization();
+
+                StopVideoOnPlayer();
+
+                if (_uiController != null)
+                {
+                    _uiController.SetSettingsLocked(false);
+                }
+
+                SendCustomNetworkEvent(
+                    NetworkEventTarget.All,
+                    nameof(NetAbortStagePlayback),
+                    _playbackSessionId
+                );
+            }
+        }
+
+        [NetworkCallable(100)]
         public void NetAbortStagePlayback(int sessionId)
         {
             if (sessionId != _playbackSessionId) return;
@@ -1328,6 +1447,11 @@ namespace AppleteaSystems.StageSyncSystem
             RestoreVideoPlayerVolume();
             StopAllDirections();
             OnStagePlaybackEnded();
+
+            if (_performerUIController != null)
+            {
+                _performerUIController.OnStagePlaybackAborted(sessionId);
+            }
         }
 
         [NetworkCallable(100)]
@@ -1373,6 +1497,11 @@ namespace AppleteaSystems.StageSyncSystem
             if (_uiController != null)
             {
                 _uiController.RefreshDelayStatusUI();
+            }
+
+            if (_performerUIController != null)
+            {
+                _performerUIController.OnStagePlaybackStarted(objectIndex, sessionId);
             }
 
             SendCustomEventDelayedSeconds(nameof(DelayedForceSync), 1.0f);
@@ -1810,6 +1939,10 @@ namespace AppleteaSystems.StageSyncSystem
                 ApplyOffset();
                 ApplyPerformerObjects();
                 SyncLocalPerformerState();
+                if (_performerUIController != null)
+                {
+                    _performerUIController.OnPerformerRoleChanged(_isPerformer);
+                }
             }
 
             if (_hasPendingLatencyUpdate)
@@ -1851,6 +1984,20 @@ namespace AppleteaSystems.StageSyncSystem
             if (_uiController != null)
             {
                 _uiController.SSSCore = this;
+            }
+
+            if (_performerUIController == null && transform.parent != null)
+            {
+                _performerUIController = transform.parent.GetComponentInChildren<SSSPerformerUIController>(true);
+            }
+            if (_performerUIController != null)
+            {
+                _performerUIController.SSSCore = this;
+                if (_uiController != null)
+                {
+                    _performerUIController.MainUIController = _uiController;
+                    _uiController.PerformerUIController = _performerUIController;
+                }
             }
         }
 
@@ -1913,6 +2060,9 @@ namespace AppleteaSystems.StageSyncSystem
             if (obj.GetComponentInChildren<SSSCore>(true) != null) return true;
             if (obj.GetComponentInChildren<DirectionController>(true) != null) return true;
             if (obj.GetComponentInChildren<SSSUIController>(true) != null) return true;
+            if (obj.GetComponentInChildren<SSSPerformerUIController>(true) != null) return true;
+            if (obj.GetComponentInChildren<SSSPerformerTrigger>(true) != null) return true;
+            if (obj.GetComponentInChildren<SSSPerformerProximityChecker>(true) != null) return true;
             if (obj.GetComponentInChildren<DirectionObject>(true) != null) return true;
             if (obj.GetComponentInChildren<DirectionSwitch>(true) != null) return true;
             if (obj.GetComponentInChildren<PerformerChecker>(true) != null) return true;
@@ -1931,11 +2081,19 @@ namespace AppleteaSystems.StageSyncSystem
                 }
             }
 
-            // 4. Stage Sync System の UI 階層の保護
+            // 4. Stage Sync System の UI 階層および演者端末階層の保護
             if (transform.parent != null)
             {
                 Transform uiRoot = transform.parent.Find("UI");
                 if (uiRoot != null && (t == uiRoot || uiRoot.IsChildOf(t) || t.IsChildOf(uiRoot))) return true;
+
+                Transform perfUiRoot = transform.parent.Find("Performer Portable UI");
+                if (perfUiRoot != null && (t == perfUiRoot || perfUiRoot.IsChildOf(t) || t.IsChildOf(perfUiRoot))) return true;
+            }
+            if (_performerUIController != null)
+            {
+                Transform perfTransform = _performerUIController.transform;
+                if (t == perfTransform || perfTransform.IsChildOf(t) || t.IsChildOf(perfTransform)) return true;
             }
 
             return false;

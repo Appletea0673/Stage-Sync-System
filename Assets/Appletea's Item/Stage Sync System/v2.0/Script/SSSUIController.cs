@@ -2,6 +2,8 @@ using System;
 using UnityEngine;
 using UnityEngine.UI;
 using VRC.SDKBase;
+using VRC.SDK3.UdonNetworkCalling;
+using VRC.Udon.Common.Interfaces;
 using UdonSharp;
 
 namespace AppleteaSystems.StageSyncSystem
@@ -24,6 +26,9 @@ namespace AppleteaSystems.StageSyncSystem
         [SerializeField]
         [Tooltip("連携先のSSSCore")]
         SSSCore _sssCore;
+
+        [SerializeField, HideInInspector]
+        SSSPerformerUIController _performerUIController;
 
         [Header("Playlist Switches")]
         [SerializeField]
@@ -209,12 +214,20 @@ namespace AppleteaSystems.StageSyncSystem
             set => _sssCore = value;
         }
 
+        public SSSPerformerUIController PerformerUIController
+        {
+            get => _performerUIController;
+            set => _performerUIController = value;
+        }
+
         public Button[] DirectionSWs
         {
             get => _directionSWs;
             set => _directionSWs = value;
         }
 
+        public int SyncedReadyCount => _syncedReadyCount;
+        public int SyncedTotalCount => _syncedTotalCount;
         public bool IgnoreThresholdError => _syncedIgnoreThreshold;
         public bool IgnorePerformerError => _syncedIgnorePerformerError;
         public bool ForceLaunchAlways => _syncedForceLaunchAlways;
@@ -244,6 +257,15 @@ namespace AppleteaSystems.StageSyncSystem
             if (_sssCore != null && _sssCore.UIController == null)
             {
                 _sssCore.UIController = this;
+            }
+
+            if (_performerUIController == null && transform.parent != null)
+            {
+                _performerUIController = transform.parent.GetComponentInChildren<SSSPerformerUIController>(true);
+            }
+            if (_performerUIController != null && _performerUIController.MainUIController == null)
+            {
+                _performerUIController.MainUIController = this;
             }
 
             if (_loadedPlayerCountText != null)
@@ -379,6 +401,11 @@ namespace AppleteaSystems.StageSyncSystem
 
             if (_delayDefaultToggle != null) _delayDefaultToggle.interactable = canEditSettings;
             if (_delayFallbackToggle != null) _delayFallbackToggle.interactable = canEditSettings;
+
+            if (_performerUIController != null)
+            {
+                _performerUIController.SyncForceLaunchFromMainUI(_syncedIgnoreThreshold, _syncedIgnorePerformerError, IsSettingsLocked);
+            }
         }
 
         #region Playlist Switch Handling (Migrated from DirectionController)
@@ -566,6 +593,12 @@ namespace AppleteaSystems.StageSyncSystem
 
             // 3. 遅延計算ステータス (Operational / Fallback)
             RefreshDelayStatusUI();
+
+            // 4. 演者端末UIへもロード進捗を同期反映
+            if (_performerUIController != null)
+            {
+                _performerUIController.OnLoadProgressUpdated(_syncedReadyCount, _syncedTotalCount);
+            }
         }
 
         public void RefreshDelayStatusUI()
@@ -722,6 +755,38 @@ namespace AppleteaSystems.StageSyncSystem
                     }
                 }
             }
+
+            if (_performerUIController != null)
+            {
+                _performerUIController.ApplySortOrderFromMainUI(_currentSortedIndices, count);
+            }
+        }
+
+        public int GetFirstSortedDirectionIndex()
+        {
+            InitializeIfNeeded();
+            if (_currentSortedIndices != null && _currentSortedIndices.Length > 0)
+            {
+                return _currentSortedIndices[0];
+            }
+            return 0;
+        }
+
+        public int GetNextSortedDirectionIndex(int currentIndex)
+        {
+            InitializeIfNeeded();
+            if (_currentSortedIndices == null || _currentSortedIndices.Length <= 0) return 0;
+
+            for (int i = 0; i < _currentSortedIndices.Length; i++)
+            {
+                if (_currentSortedIndices[i] == currentIndex)
+                {
+                    int nextPos = (i + 1) % _currentSortedIndices.Length;
+                    return _currentSortedIndices[nextPos];
+                }
+            }
+
+            return _currentSortedIndices[0];
         }
 
         private int CompareDirections(DirectionObject[] dirs, int indexA, int indexB, int sortMode)
@@ -847,6 +912,64 @@ namespace AppleteaSystems.StageSyncSystem
             _syncedIgnoreThreshold = ignoreThreshold;
             _syncedIgnorePerformerError = ignorePerformer;
 
+            ApplyForceLaunchStateToCoreAndUI();
+            RequestSerialization();
+        }
+
+        public void RequestSetForceLaunchFromPerformer(bool ignoreThreshold, bool ignorePerformer)
+        {
+            InitializeIfNeeded();
+            if (IsSettingsLocked)
+            {
+                SyncUITogglesFromState();
+                ApplyForceLaunchStateToCoreAndUI();
+                return;
+            }
+
+            if (Networking.IsOwner(gameObject))
+            {
+                ApplyForceLaunchFromPerformerRequest(ignoreThreshold, ignorePerformer);
+            }
+            else
+            {
+                SendCustomNetworkEvent(
+                    NetworkEventTarget.Owner,
+                    nameof(NetSetForceLaunchFromPerformer),
+                    ignoreThreshold,
+                    ignorePerformer
+                );
+            }
+        }
+
+        [NetworkCallable(100)]
+        public void NetSetForceLaunchFromPerformer(bool ignoreThreshold, bool ignorePerformer)
+        {
+            if (!Networking.IsOwner(gameObject)) return;
+            ApplyForceLaunchFromPerformerRequest(ignoreThreshold, ignorePerformer);
+        }
+
+        public void ApplyForceLaunchFromPerformerRequest(bool ignoreThreshold, bool ignorePerformer)
+        {
+            InitializeIfNeeded();
+            if (IsSettingsLocked)
+            {
+                SyncUITogglesFromState();
+                ApplyForceLaunchStateToCoreAndUI();
+                return;
+            }
+
+            if (_syncedIgnoreThreshold == ignoreThreshold && _syncedIgnorePerformerError == ignorePerformer)
+            {
+                SyncUITogglesFromState();
+                ApplyForceLaunchStateToCoreAndUI();
+                return;
+            }
+
+            TakeOwnership();
+            _syncedIgnoreThreshold = ignoreThreshold;
+            _syncedIgnorePerformerError = ignorePerformer;
+
+            SyncUITogglesFromState();
             ApplyForceLaunchStateToCoreAndUI();
             RequestSerialization();
         }
