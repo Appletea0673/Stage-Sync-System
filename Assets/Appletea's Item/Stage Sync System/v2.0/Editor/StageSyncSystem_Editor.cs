@@ -40,7 +40,7 @@ namespace AppleteaSystems.StageSyncSystem
         ReorderableList _reorderableList;
 
         const string _directionSWRootPath = "UI/Canvas/Panel/Playlist Menu/Scroll View/Scroll View/Viewport/Content";
-        const string _performerSWRootPath = "Performer Portable UI/Canvas/StandbyPanel/Scroll View/Viewport/Content";
+        const string _performerSWRootPath = "Performer Portable UI/Canvas/Panel/StandbyPanel/Scroll View/Viewport/Content";
         const string _directionSW_BaseName = "DirectionSW";
         const string _bridgeObjectName = "Bridge";
         const string _uiObjectName = "UI";
@@ -695,6 +695,17 @@ namespace AppleteaSystems.StageSyncSystem
                 if (interactableProp != null) interactableProp.boolValue = interactable.Value;
             }
 
+            SerializedProperty targetGraphicProp = toggleSO.FindProperty("m_TargetGraphic");
+            if (targetGraphicProp != null && targetGraphicProp.objectReferenceValue == null)
+            {
+                Transform slideBg = toggle.transform.Find("Toggle");
+                if (slideBg != null)
+                {
+                    Graphic g = slideBg.GetComponent<Graphic>();
+                    if (g != null) targetGraphicProp.objectReferenceValue = g;
+                }
+            }
+
             EnsurePersistentSendCustomEvent(toggleSO, "onValueChanged.m_PersistentCalls.m_Calls", targetUdon, eventName);
             toggleSO.ApplyModifiedPropertiesWithoutUndo();
         }
@@ -911,8 +922,8 @@ namespace AppleteaSystems.StageSyncSystem
             BoxCollider parentCol = perfRootGO.GetComponent<BoxCollider>();
             if (parentCol == null) parentCol = perfRootGO.AddComponent<BoxCollider>();
             parentCol.isTrigger = false;
-            parentCol.center = new Vector3(0f, -0.25f, 0f);
-            parentCol.size = new Vector3(0.46f, 0.045f, 0.045f);
+            parentCol.center = new Vector3(0f, -0.2086f, -0.0404f);
+            parentCol.size = new Vector3(0.42f, 0.035f, 0.06f);
 
             VRCPickup parentPickup = perfRootGO.GetComponent<VRCPickup>();
             if (parentPickup == null) parentPickup = perfRootGO.AddComponent<VRCPickup>();
@@ -959,65 +970,80 @@ namespace AppleteaSystems.StageSyncSystem
                 UdonSharpEditorUtility.CopyProxyToUdon(proxChecker);
             }
 
-            // 3. VisualMesh (親機フレームハンドル / Lock状態表示)
-            Transform visualMeshTrans = perfRootGO.transform.Find("VisualMesh");
-            GameObject visualMeshGO;
-            if (visualMeshTrans == null)
+            // 3. Pickup Bar (親機把持ハンドル / Lock時はオブジェクト自体を非表示)
+            Transform oldVisualMeshTrans = perfRootGO.transform.Find("VisualMesh");
+            if (oldVisualMeshTrans != null)
             {
-                visualMeshGO = GameObject.CreatePrimitive(PrimitiveType.Cube);
-                visualMeshGO.name = "VisualMesh";
-                visualMeshGO.transform.SetParent(perfRootGO.transform, false);
-                visualMeshGO.transform.localPosition = new Vector3(0f, -0.25f, 0f);
-                visualMeshGO.transform.localRotation = Quaternion.identity;
-                visualMeshGO.transform.localScale = new Vector3(0.46f, 0.025f, 0.025f);
-                Collider extraCol = visualMeshGO.GetComponent<Collider>();
+                DestroyImmediate(oldVisualMeshTrans.gameObject);
+            }
+
+            Transform pickupBarTrans = perfRootGO.transform.Find("Pickup Bar");
+            GameObject pickupBarGO;
+            if (pickupBarTrans == null)
+            {
+                pickupBarGO = new GameObject("Pickup Bar");
+                pickupBarGO.transform.SetParent(perfRootGO.transform, false);
+                pickupBarGO.transform.localPosition = Vector3.zero;
+                pickupBarGO.transform.localRotation = Quaternion.identity;
+                pickupBarGO.transform.localScale = Vector3.one;
+
+                GameObject barMeshGO = GameObject.CreatePrimitive(PrimitiveType.Cube);
+                barMeshGO.name = "Bar v1.0";
+                barMeshGO.transform.SetParent(pickupBarGO.transform, false);
+                barMeshGO.transform.localPosition = new Vector3(0f, -0.2086f, -0.0504f);
+                barMeshGO.transform.localRotation = Quaternion.identity;
+                barMeshGO.transform.localScale = new Vector3(0.42f, 0.02f, 0.02f);
+                Collider extraCol = barMeshGO.GetComponent<Collider>();
                 if (extraCol != null) DestroyImmediate(extraCol);
             }
             else
             {
-                visualMeshGO = visualMeshTrans.gameObject;
+                pickupBarGO = pickupBarTrans.gameObject;
             }
 
-            Transform lockIndTrans = visualMeshGO.transform.Find("LockIndicator");
-            GameObject lockIndGO;
-            if (lockIndTrans == null)
-            {
-                lockIndGO = GameObject.CreatePrimitive(PrimitiveType.Cube);
-                lockIndGO.name = "LockIndicator";
-                lockIndGO.transform.SetParent(visualMeshGO.transform, false);
-                lockIndGO.transform.localPosition = new Vector3(0f, 0.6f, -0.55f);
-                lockIndGO.transform.localRotation = Quaternion.identity;
-                lockIndGO.transform.localScale = new Vector3(0.95f, 0.35f, 0.25f);
-                Collider extraCol = lockIndGO.GetComponent<Collider>();
-                if (extraCol != null) DestroyImmediate(extraCol);
-                lockIndGO.SetActive(false);
-            }
-            else
-            {
-                lockIndGO = lockIndTrans.gameObject;
-            }
-
-            // 4. TriggerHolster & PerformerTrigger
+            // 4. TriggerHolster (Pedestal) & PerformerTrigger
             Transform holsterTrans = perfRootGO.transform.Find("TriggerHolster");
             GameObject holsterGO = holsterTrans != null ? holsterTrans.gameObject : new GameObject("TriggerHolster");
             holsterGO.transform.SetParent(perfRootGO.transform, false);
             if (holsterTrans == null)
             {
-                holsterGO.transform.localPosition = new Vector3(0.28f, -0.10f, 0f);
+                holsterGO.transform.localPosition = new Vector3(0.28f, -0.122f, 0f);
                 holsterGO.transform.localRotation = Quaternion.identity;
                 holsterGO.transform.localScale = Vector3.one;
             }
 
-            Transform holsterRingTrans = holsterGO.transform.Find("HolsterVisual");
-            if (holsterRingTrans == null)
+            Transform oldHolsterVisual = holsterGO.transform.Find("HolsterVisual");
+            if (oldHolsterVisual != null && holsterGO.transform.childCount > 1)
             {
-                GameObject ringGO = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
-                ringGO.name = "HolsterVisual";
-                ringGO.transform.SetParent(holsterGO.transform, false);
-                ringGO.transform.localPosition = new Vector3(0f, -0.03f, 0f);
-                ringGO.transform.localScale = new Vector3(0.06f, 0.008f, 0.06f);
-                Collider extraCol = ringGO.GetComponent<Collider>();
-                if (extraCol != null) DestroyImmediate(extraCol);
+                DestroyImmediate(oldHolsterVisual.gameObject);
+            }
+
+            Transform pedestalTrans = holsterGO.transform.Find("Pedestal");
+            if (pedestalTrans == null)
+            {
+                Transform existingChild = holsterGO.transform.Find("Circle v1.0");
+                if (existingChild == null) existingChild = holsterGO.transform.Find("HolsterVisual");
+                if (existingChild == null && holsterGO.transform.childCount > 0)
+                {
+                    existingChild = holsterGO.transform.GetChild(0);
+                }
+
+                if (existingChild != null)
+                {
+                    existingChild.gameObject.name = "Pedestal";
+                    pedestalTrans = existingChild;
+                }
+                else
+                {
+                    GameObject ringGO = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+                    ringGO.name = "Pedestal";
+                    ringGO.transform.SetParent(holsterGO.transform, false);
+                    ringGO.transform.localPosition = new Vector3(0f, -0.03f, 0f);
+                    ringGO.transform.localScale = new Vector3(0.06f, 0.008f, 0.06f);
+                    Collider extraCol = ringGO.GetComponent<Collider>();
+                    if (extraCol != null) DestroyImmediate(extraCol);
+                    pedestalTrans = ringGO.transform;
+                }
             }
 
             Transform trigTrans = perfRootGO.transform.Find("PerformerTrigger");
@@ -1048,9 +1074,10 @@ namespace AppleteaSystems.StageSyncSystem
             trigPickup.UseText = "Fire Next Cue";
 
             Transform trigMeshTrans = trigGO.transform.Find("TriggerMesh");
+            GameObject trigMeshGO;
             if (trigMeshTrans == null)
             {
-                GameObject trigMeshGO = GameObject.CreatePrimitive(PrimitiveType.Capsule);
+                trigMeshGO = GameObject.CreatePrimitive(PrimitiveType.Capsule);
                 trigMeshGO.name = "TriggerMesh";
                 trigMeshGO.transform.SetParent(trigGO.transform, false);
                 trigMeshGO.transform.localPosition = Vector3.zero;
@@ -1058,6 +1085,10 @@ namespace AppleteaSystems.StageSyncSystem
                 trigMeshGO.transform.localScale = new Vector3(0.042f, 0.055f, 0.042f);
                 Collider extraCol = trigMeshGO.GetComponent<Collider>();
                 if (extraCol != null) DestroyImmediate(extraCol);
+            }
+            else
+            {
+                trigMeshGO = trigMeshTrans.gameObject;
             }
 
             SSSPerformerTrigger perfTrigger = trigGO.GetComponent<SSSPerformerTrigger>();
@@ -1073,6 +1104,7 @@ namespace AppleteaSystems.StageSyncSystem
                 trigSO.Update();
                 trigSO.FindProperty("_performerUIController").objectReferenceValue = performerUI;
                 trigSO.FindProperty("_holsterTransform").objectReferenceValue = holsterGO.transform;
+                trigSO.FindProperty("_triggerVisualObject").objectReferenceValue = trigMeshGO;
                 trigSO.FindProperty("_pickup").objectReferenceValue = trigPickup;
                 trigSO.FindProperty("_rigidbody").objectReferenceValue = trigRb;
                 trigSO.FindProperty("_pickupCollider").objectReferenceValue = trigCol;
@@ -1080,7 +1112,7 @@ namespace AppleteaSystems.StageSyncSystem
                 UdonSharpEditorUtility.CopyProxyToUdon(perfTrigger);
             }
 
-            // 5. Canvas [Canvas, CanvasScaler, GraphicRaycaster, VRCUiShape] & 3状態パネルの構築
+            // 5. Canvas [Canvas, CanvasScaler, GraphicRaycaster, VRCUiShape] & 3状態パネルの検索・構築
             BuildPerformerCanvasHierarchy(
                 root,
                 perfRootGO.transform,
@@ -1092,11 +1124,27 @@ namespace AppleteaSystems.StageSyncSystem
                 out Toggle ignoreThresholdToggle,
                 out Toggle ignorePerformerToggle,
                 out Toggle posLockToggle,
+                out GameObject posUnlockIcon,
+                out GameObject posLockIcon,
+                out Text loadingLoadedCountText,
+                out Text loadingPerfStatusText,
+                out GameObject loadingPerfReadyObj,
+                out GameObject loadingPerfWarningObj,
+                out Text loadingDelayStatusText,
                 out Text loadingDirText,
+                out Text loadingPctText,
+                out Slider loadingBarSlider,
                 out Text loadingProgText,
                 out Button forceStartBtn,
                 out Button cancelLoadBtn,
+                out Text playingLoadedCountText,
+                out Text playingPerfStatusText,
+                out GameObject playingPerfReadyObj,
+                out GameObject playingPerfWarningObj,
+                out Text playingDelayStatusText,
                 out Text playingDirText,
+                out Text playingVideoTimeText,
+                out Slider playingBarSlider,
                 out Toggle unlockStopToggle,
                 out Button emergencyStopBtn);
 
@@ -1115,18 +1163,36 @@ namespace AppleteaSystems.StageSyncSystem
             performerUISO.FindProperty("_loadingPanel").objectReferenceValue = loadingPanelGO;
             performerUISO.FindProperty("_playingPanel").objectReferenceValue = playingPanelGO;
 
+            AssignIfNull(performerUISO, "_positionLockToggle", posLockToggle);
+            AssignIfNull(performerUISO, "_positionUnlockIcon", posUnlockIcon);
+            AssignIfNull(performerUISO, "_positionLockIcon", posLockIcon);
+            AssignIfNull(performerUISO, "_pickupBarObject", pickupBarGO);
+            AssignIfNull(performerUISO, "_triggerHolsterObject", holsterGO);
+
             AssignIfNull(performerUISO, "_nextCueText", nextCueText);
             AssignIfNull(performerUISO, "_ignoreThresholdToggle", ignoreThresholdToggle);
             AssignIfNull(performerUISO, "_ignorePerformerErrorToggle", ignorePerformerToggle);
-            AssignIfNull(performerUISO, "_positionLockToggle", posLockToggle);
-            AssignIfNull(performerUISO, "_lockVisualIndicator", lockIndGO);
 
+            AssignIfNull(performerUISO, "_loadingLoadedPlayerCountText", loadingLoadedCountText);
+            AssignIfNull(performerUISO, "_loadingPerformerStatusText", loadingPerfStatusText);
+            AssignIfNull(performerUISO, "_loadingPerformerReadyObject", loadingPerfReadyObj);
+            AssignIfNull(performerUISO, "_loadingPerformerWarningObject", loadingPerfWarningObj);
+            AssignIfNull(performerUISO, "_loadingDelayStatusText", loadingDelayStatusText);
             AssignIfNull(performerUISO, "_loadingDirectionText", loadingDirText);
+            AssignIfNull(performerUISO, "_loadingPercentageText", loadingPctText);
+            AssignIfNull(performerUISO, "_loadingProgressBar", loadingBarSlider);
             AssignIfNull(performerUISO, "_loadingProgressText", loadingProgText);
             AssignIfNull(performerUISO, "_forceStartNowButton", forceStartBtn);
             AssignIfNull(performerUISO, "_cancelLoadingButton", cancelLoadBtn);
 
+            AssignIfNull(performerUISO, "_playingLoadedPlayerCountText", playingLoadedCountText);
+            AssignIfNull(performerUISO, "_playingPerformerStatusText", playingPerfStatusText);
+            AssignIfNull(performerUISO, "_playingPerformerReadyObject", playingPerfReadyObj);
+            AssignIfNull(performerUISO, "_playingPerformerWarningObject", playingPerfWarningObj);
+            AssignIfNull(performerUISO, "_playingDelayStatusText", playingDelayStatusText);
             AssignIfNull(performerUISO, "_playingDirectionText", playingDirText);
+            AssignIfNull(performerUISO, "_playingVideoTimeText", playingVideoTimeText);
+            AssignIfNull(performerUISO, "_playingProgressBar", playingBarSlider);
             AssignIfNull(performerUISO, "_unlockEmergencyStopToggle", unlockStopToggle);
             AssignIfNull(performerUISO, "_emergencyStopButton", emergencyStopBtn);
 
@@ -1186,11 +1252,27 @@ namespace AppleteaSystems.StageSyncSystem
             out Toggle ignoreThresholdToggle,
             out Toggle ignorePerformerToggle,
             out Toggle posLockToggle,
+            out GameObject posUnlockIcon,
+            out GameObject posLockIcon,
+            out Text loadingLoadedCountText,
+            out Text loadingPerfStatusText,
+            out GameObject loadingPerfReadyObj,
+            out GameObject loadingPerfWarningObj,
+            out Text loadingDelayStatusText,
             out Text loadingDirText,
+            out Text loadingPctText,
+            out Slider loadingBarSlider,
             out Text loadingProgText,
             out Button forceStartBtn,
             out Button cancelLoadBtn,
+            out Text playingLoadedCountText,
+            out Text playingPerfStatusText,
+            out GameObject playingPerfReadyObj,
+            out GameObject playingPerfWarningObj,
+            out Text playingDelayStatusText,
             out Text playingDirText,
+            out Text playingVideoTimeText,
+            out Slider playingBarSlider,
             out Toggle unlockStopToggle,
             out Button emergencyStopBtn)
         {
@@ -1207,7 +1289,6 @@ namespace AppleteaSystems.StageSyncSystem
 
             CanvasScaler scaler = canvasGO.GetComponent<CanvasScaler>();
             if (scaler == null) scaler = canvasGO.AddComponent<CanvasScaler>();
-            scaler.dynamicPixelsPerUnit = 10f;
 
             if (canvasGO.GetComponent<GraphicRaycaster>() == null)
             {
@@ -1218,42 +1299,47 @@ namespace AppleteaSystems.StageSyncSystem
                 canvasGO.AddComponent<VRCUiShape>();
             }
 
+            // VRCUiShape用のメインBoxColliderと、Canvas右外側に配置されたUI Lock Toggle用のBoxColliderを保証
+            BoxCollider[] canvasBoxCols = canvasGO.GetComponents<BoxCollider>();
+            BoxCollider mainCanvasCol = (canvasBoxCols != null && canvasBoxCols.Length >= 1) ? canvasBoxCols[0] : canvasGO.AddComponent<BoxCollider>();
             RectTransform canvasRect = canvasGO.GetComponent<RectTransform>();
-            if (canvasTrans == null && canvasRect != null)
+            Vector2 canvasSize = canvasRect != null && canvasRect.sizeDelta.sqrMagnitude > 0f ? canvasRect.sizeDelta : new Vector2(920f, 950f);
+            mainCanvasCol.isTrigger = true;
+            mainCanvasCol.center = Vector3.zero;
+            mainCanvasCol.size = new Vector3(canvasSize.x, canvasSize.y, 1f);
+
+            BoxCollider lockToggleCol = (canvasBoxCols != null && canvasBoxCols.Length >= 2) ? canvasBoxCols[1] : canvasGO.AddComponent<BoxCollider>();
+            lockToggleCol.isTrigger = true;
+            lockToggleCol.center = new Vector3(560f, -391f, 0f);
+            lockToggleCol.size = new Vector3(160f, 105f, 1f);
+
+            // 既存の Canvas/Panel 構造がある場合はそちらを優先使用（重複生成しない）
+            Transform panelRoot = canvasGO.transform.Find("Panel");
+            if (panelRoot == null)
             {
-                canvasRect.localPosition = Vector3.zero;
-                canvasRect.localRotation = Quaternion.identity;
-                canvasRect.localScale = new Vector3(0.0005f, 0.0005f, 0.0005f);
-                canvasRect.sizeDelta = new Vector2(920f, 880f);
+                panelRoot = canvasGO.transform;
             }
 
-            // 背景フレーム
-            Transform bgTrans = canvasGO.transform.Find("Background");
-            if (bgTrans == null)
+            // Position Lock Toggle (Canvas/UI Lock Toggle)
+            posLockToggle = FindComponent<Toggle>(canvasGO.transform, "UI Lock Toggle");
+            if (posLockToggle == null)
             {
-                GameObject bgGO = CreateUIElement("Background", canvasGO.transform);
-                SetStretchRect(bgGO.GetComponent<RectTransform>(), 0f, 0f, 0f, 0f);
-                Image bgImg = bgGO.AddComponent<Image>();
-                bgImg.color = new Color(0.07f, 0.08f, 0.11f, 0.94f);
-
-                GameObject headerGO = CreateUIElement("Header", bgGO.transform);
-                RectTransform headerRect = headerGO.GetComponent<RectTransform>();
-                headerRect.anchorMin = new Vector2(0f, 1f);
-                headerRect.anchorMax = new Vector2(1f, 1f);
-                headerRect.pivot = new Vector2(0.5f, 1f);
-                headerRect.anchoredPosition = Vector2.zero;
-                headerRect.sizeDelta = new Vector2(0f, 54f);
-                Image headerImg = headerGO.AddComponent<Image>();
-                headerImg.color = new Color(0.14f, 0.16f, 0.24f, 1f);
-
-                Text headerTxt = CreateTextElement("HeaderTitle", headerGO.transform, font, "PERFORMER PORTABLE UI", 22, TextAnchor.MiddleCenter, Color.white);
-                headerTxt.fontStyle = FontStyle.Bold;
-                SetStretchRect(headerTxt.GetComponent<RectTransform>(), 12f, 0f, -12f, 0f);
+                posLockToggle = FindComponent<Toggle>(canvasGO.transform, "Toggle");
+            }
+            if (posLockToggle != null)
+            {
+                posUnlockIcon = FindGameObject(posLockToggle.transform, "Toggle/Button/Unlock");
+                posLockIcon = FindGameObject(posLockToggle.transform, "Toggle/Button/Lock");
+            }
+            else
+            {
+                posUnlockIcon = FindGameObject(canvasGO.transform, "UI Lock Toggle/Toggle/Button/Unlock");
+                posLockIcon = FindGameObject(canvasGO.transform, "UI Lock Toggle/Toggle/Button/Lock");
             }
 
             // 1. StandbyPanel
-            Transform standbyTrans = canvasGO.transform.Find("StandbyPanel");
-            standbyPanel = standbyTrans != null ? standbyTrans.gameObject : CreateUIElement("StandbyPanel", canvasGO.transform);
+            Transform standbyTrans = panelRoot.Find("StandbyPanel");
+            standbyPanel = standbyTrans != null ? standbyTrans.gameObject : CreateUIElement("StandbyPanel", panelRoot);
             if (standbyTrans == null)
             {
                 SetStretchRect(standbyPanel.GetComponent<RectTransform>(), 20f, 16f, -20f, -68f);
@@ -1270,141 +1356,85 @@ namespace AppleteaSystems.StageSyncSystem
                 cueRect.anchoredPosition = Vector2.zero;
                 cueRect.sizeDelta = new Vector2(0f, 52f);
                 Image cueBg = cueBanner.AddComponent<Image>();
-                cueBg.color = new Color(0.12f, 0.20f, 0.34f, 1f);
+                cueBg.color = new Color(0.8f, 0.8f, 0.8f, 1f);
 
-                nextCueText = CreateTextElement("NextCueText", cueBanner.transform, font, "Next Cue: (Select Direction)", 24, TextAnchor.MiddleLeft, new Color(0.4f, 0.95f, 1f, 1f));
-                nextCueText.fontStyle = FontStyle.Bold;
+                nextCueText = CreateTextElement("NextCueText", cueBanner.transform, font, "Next Cue: (Select Direction)", 24, TextAnchor.MiddleLeft, new Color(0.3019608f, 0.3019608f, 0.3019608f, 1f));
                 SetStretchRect(nextCueText.GetComponent<RectTransform>(), 16f, 4f, -16f, -4f);
             }
 
-            // StandbyPanel Scroll View & DirectionSW template
             Transform scrollTrans = standbyPanel.transform.Find("Scroll View");
             if (scrollTrans == null)
             {
                 BuildPlaylistScrollView(sssRoot, standbyPanel.transform, font);
             }
 
-            ignoreThresholdToggle = FindComponent<Toggle>(standbyPanel.transform, "BottomControls/IgnoreThresholdToggle");
+            Transform bottomTrans = standbyPanel.transform.Find("BottomControls");
             ignorePerformerToggle = FindComponent<Toggle>(standbyPanel.transform, "BottomControls/IgnorePerformerErrorToggle");
-            posLockToggle = FindComponent<Toggle>(standbyPanel.transform, "BottomControls/PositionLockToggle");
-            if (ignoreThresholdToggle == null || ignorePerformerToggle == null || posLockToggle == null)
+            ignoreThresholdToggle = FindComponent<Toggle>(standbyPanel.transform, "BottomControls/IgnoreThresholdToggle");
+            if (bottomTrans != null)
             {
-                Transform bottomTrans = standbyPanel.transform.Find("BottomControls");
-                GameObject bottomGO = bottomTrans != null ? bottomTrans.gameObject : CreateUIElement("BottomControls", standbyPanel.transform);
-                RectTransform bottomRect = bottomGO.GetComponent<RectTransform>();
-                bottomRect.anchorMin = new Vector2(0f, 0f);
-                bottomRect.anchorMax = new Vector2(1f, 0f);
-                bottomRect.pivot = new Vector2(0.5f, 0f);
-                bottomRect.anchoredPosition = Vector2.zero;
-                bottomRect.sizeDelta = new Vector2(0f, 196f);
-
-                if (ignoreThresholdToggle == null)
+                if (ignorePerformerToggle == null && bottomTrans.childCount > 0)
                 {
-                    ignoreThresholdToggle = CreateLabeledToggleRow("IgnoreThresholdToggle", bottomGO.transform, font, "Force Launch: Ignore Audience Threshold (Main UI Linked)", 134f, false);
+                    ignorePerformerToggle = bottomTrans.GetChild(0).GetComponent<Toggle>();
                 }
-                if (ignorePerformerToggle == null)
+                if (ignoreThresholdToggle == null && bottomTrans.childCount > 1)
                 {
-                    ignorePerformerToggle = CreateLabeledToggleRow("IgnorePerformerErrorToggle", bottomGO.transform, font, "Force Launch: Ignore Performer Error (Main UI Linked)", 70f, false);
+                    ignoreThresholdToggle = bottomTrans.GetChild(1).GetComponent<Toggle>();
                 }
-                if (posLockToggle == null)
-                {
-                    posLockToggle = CreateLabeledToggleRow("PositionLockToggle", bottomGO.transform, font, "Lock Panel Position (Prevent Accidental Grab)", 6f, false);
-                }
+            }
+            if (posLockToggle == null)
+            {
+                posLockToggle = FindComponent<Toggle>(standbyPanel.transform, "BottomControls/PositionLockToggle");
             }
 
             // 2. LoadingPanel
-            Transform loadingTrans = canvasGO.transform.Find("LoadingPanel");
-            loadingPanel = loadingTrans != null ? loadingTrans.gameObject : CreateUIElement("LoadingPanel", canvasGO.transform);
+            Transform loadingTrans = panelRoot.Find("LoadingPanel");
+            loadingPanel = loadingTrans != null ? loadingTrans.gameObject : CreateUIElement("LoadingPanel", panelRoot);
             if (loadingTrans == null)
             {
                 SetStretchRect(loadingPanel.GetComponent<RectTransform>(), 28f, 24f, -28f, -74f);
                 loadingPanel.SetActive(false);
             }
 
-            loadingDirText = FindComponent<Text>(loadingPanel.transform, "LoadingDirectionText");
+            loadingLoadedCountText = FindComponent<Text>(loadingPanel.transform, "Status/Loaded Player/Loaded Player num");
+            loadingPerfStatusText = FindComponent<Text>(loadingPanel.transform, "Status/Performer Status/Performer Status");
+            loadingPerfReadyObj = FindGameObject(loadingPanel.transform, "Status/Performer Status/Ready");
+            loadingPerfWarningObj = FindGameObject(loadingPanel.transform, "Status/Performer Status/Warning");
+            loadingDelayStatusText = FindComponent<Text>(loadingPanel.transform, "Status/Delay Status/Delay Status");
+            loadingDirText = FindComponent<Text>(loadingPanel.transform, "Loading Status/LoadingDirectionText");
             if (loadingDirText == null)
             {
-                loadingDirText = CreateTextElement("LoadingDirectionText", loadingPanel.transform, font, "Loading: ---", 28, TextAnchor.MiddleCenter, Color.white);
-                loadingDirText.fontStyle = FontStyle.Bold;
-                RectTransform r = loadingDirText.GetComponent<RectTransform>();
-                r.anchorMin = new Vector2(0f, 0.76f);
-                r.anchorMax = new Vector2(1f, 0.92f);
-                r.offsetMin = Vector2.zero;
-                r.offsetMax = Vector2.zero;
+                loadingDirText = FindComponent<Text>(loadingPanel.transform, "LoadingDirectionText");
             }
-
+            loadingPctText = FindComponent<Text>(loadingPanel.transform, "Loading Status/Percentage");
+            loadingBarSlider = FindComponent<Slider>(loadingPanel.transform, "Loading Bar");
             loadingProgText = FindComponent<Text>(loadingPanel.transform, "LoadingProgressText");
-            if (loadingProgText == null)
-            {
-                loadingProgText = CreateTextElement("LoadingProgressText", loadingPanel.transform, font, "Loaded: 0/0", 48, TextAnchor.MiddleCenter, new Color(0.35f, 1f, 0.65f, 1f));
-                loadingProgText.fontStyle = FontStyle.Bold;
-                RectTransform r = loadingProgText.GetComponent<RectTransform>();
-                r.anchorMin = new Vector2(0f, 0.52f);
-                r.anchorMax = new Vector2(1f, 0.74f);
-                r.offsetMin = Vector2.zero;
-                r.offsetMax = Vector2.zero;
-            }
-
             forceStartBtn = FindComponent<Button>(loadingPanel.transform, "ForceStartNowButton");
-            if (forceStartBtn == null)
-            {
-                forceStartBtn = CreateActionButton("ForceStartNowButton", loadingPanel.transform, font, "FORCE START NOW", 30, new Color(0.85f, 0.48f, 0.10f, 1f));
-                RectTransform r = forceStartBtn.GetComponent<RectTransform>();
-                r.anchorMin = new Vector2(0.08f, 0.27f);
-                r.anchorMax = new Vector2(0.92f, 0.45f);
-                r.offsetMin = Vector2.zero;
-                r.offsetMax = Vector2.zero;
-            }
-
             cancelLoadBtn = FindComponent<Button>(loadingPanel.transform, "CancelLoadingButton");
-            if (cancelLoadBtn == null)
-            {
-                cancelLoadBtn = CreateActionButton("CancelLoadingButton", loadingPanel.transform, font, "CANCEL (ABORT)", 26, new Color(0.55f, 0.18f, 0.20f, 1f));
-                RectTransform r = cancelLoadBtn.GetComponent<RectTransform>();
-                r.anchorMin = new Vector2(0.08f, 0.06f);
-                r.anchorMax = new Vector2(0.92f, 0.22f);
-                r.offsetMin = Vector2.zero;
-                r.offsetMax = Vector2.zero;
-            }
 
             // 3. PlayingPanel
-            Transform playingTrans = canvasGO.transform.Find("PlayingPanel");
-            playingPanel = playingTrans != null ? playingTrans.gameObject : CreateUIElement("PlayingPanel", canvasGO.transform);
+            Transform playingTrans = panelRoot.Find("PlayingPanel");
+            playingPanel = playingTrans != null ? playingTrans.gameObject : CreateUIElement("PlayingPanel", panelRoot);
             if (playingTrans == null)
             {
                 SetStretchRect(playingPanel.GetComponent<RectTransform>(), 28f, 24f, -28f, -74f);
                 playingPanel.SetActive(false);
             }
 
-            playingDirText = FindComponent<Text>(playingPanel.transform, "PlayingDirectionText");
+            playingLoadedCountText = FindComponent<Text>(playingPanel.transform, "Status/Loaded Player/Loaded Player num");
+            playingPerfStatusText = FindComponent<Text>(playingPanel.transform, "Status/Performer Status/Performer Status");
+            playingPerfReadyObj = FindGameObject(playingPanel.transform, "Status/Performer Status/Ready");
+            playingPerfWarningObj = FindGameObject(playingPanel.transform, "Status/Performer Status/Warning");
+            playingDelayStatusText = FindComponent<Text>(playingPanel.transform, "Status/Delay Status/Delay Status");
+            playingDirText = FindComponent<Text>(playingPanel.transform, "Video Player Status/PlayingDirectionText");
             if (playingDirText == null)
             {
-                playingDirText = CreateTextElement("PlayingDirectionText", playingPanel.transform, font, "Playing: ---", 30, TextAnchor.MiddleCenter, new Color(0.4f, 1f, 0.7f, 1f));
-                playingDirText.fontStyle = FontStyle.Bold;
-                RectTransform r = playingDirText.GetComponent<RectTransform>();
-                r.anchorMin = new Vector2(0f, 0.74f);
-                r.anchorMax = new Vector2(1f, 0.92f);
-                r.offsetMin = Vector2.zero;
-                r.offsetMax = Vector2.zero;
+                playingDirText = FindComponent<Text>(playingPanel.transform, "PlayingDirectionText");
             }
-
+            playingVideoTimeText = FindComponent<Text>(playingPanel.transform, "Video Player Status/Video Time");
+            playingBarSlider = FindComponent<Slider>(playingPanel.transform, "Loading Bar");
             unlockStopToggle = FindComponent<Toggle>(playingPanel.transform, "UnlockEmergencyStopToggle");
-            if (unlockStopToggle == null)
-            {
-                unlockStopToggle = CreateLabeledToggleRow("UnlockEmergencyStopToggle", playingPanel.transform, font, "Step 1: Unlock Emergency Stop Safety", 340f, false);
-            }
-
             emergencyStopBtn = FindComponent<Button>(playingPanel.transform, "EmergencyStopButton");
-            if (emergencyStopBtn == null)
-            {
-                emergencyStopBtn = CreateActionButton("EmergencyStopButton", playingPanel.transform, font, "Step 2: EMERGENCY STOP STAGE", 32, new Color(0.82f, 0.15f, 0.18f, 1f));
-                emergencyStopBtn.interactable = false;
-                RectTransform r = emergencyStopBtn.GetComponent<RectTransform>();
-                r.anchorMin = new Vector2(0.06f, 0.12f);
-                r.anchorMax = new Vector2(0.94f, 0.36f);
-                r.offsetMin = Vector2.zero;
-                r.offsetMax = Vector2.zero;
-            }
         }
 
         private static void BuildPlaylistScrollView(Transform sssRoot, Transform standbyPanel, Font font)
@@ -2003,7 +2033,7 @@ namespace AppleteaSystems.StageSyncSystem
     [InitializeOnLoad]
     public static class SSSPerformerPortableUI_AutoSetup
     {
-        private const string AutoSetupSessionKey = "SSS_PerformerPortableUI_AutoSetupDone";
+        private const string AutoSetupSessionKey = "SSS_PerformerPortableUI_AutoSetupDone_v2";
 
         static SSSPerformerPortableUI_AutoSetup()
         {

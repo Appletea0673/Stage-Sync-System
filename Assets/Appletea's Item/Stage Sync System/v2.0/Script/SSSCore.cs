@@ -196,6 +196,8 @@ namespace AppleteaSystems.StageSyncSystem
         public bool IsWaitingForReady => _isWaitingForReady;
         public bool IsStagePlaying => _isStagePlaying;
         public bool IsLoadingOrPlaying => _isWaitingForReady || _isStagePlaying;
+        public float CurrentVideoTime => GetCurrentVideoTime();
+        public float CurrentVideoDuration => DebugVideoDuration;
 
         public void ApplyForceLaunchSettingsFromUI(bool ignoreThreshold, bool ignorePerformer)
         {

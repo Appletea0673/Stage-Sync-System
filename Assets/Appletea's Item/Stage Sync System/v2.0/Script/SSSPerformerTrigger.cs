@@ -17,6 +17,10 @@ namespace AppleteaSystems.StageSyncSystem
         private Transform _holsterTransform;
 
         [SerializeField]
+        [Tooltip("子機の見た目メッシュオブジェクト (TriggerMesh)")]
+        private GameObject _triggerVisualObject;
+
+        [SerializeField]
         private VRC_Pickup _pickup;
 
         [SerializeField]
@@ -61,6 +65,18 @@ namespace AppleteaSystems.StageSyncSystem
             if (_pickupCollider == null)
             {
                 _pickupCollider = GetComponent<Collider>();
+            }
+            if (_triggerVisualObject == null)
+            {
+                Transform meshTrans = transform.Find("TriggerMesh");
+                if (meshTrans == null && transform.childCount > 0)
+                {
+                    meshTrans = transform.GetChild(0);
+                }
+                if (meshTrans != null)
+                {
+                    _triggerVisualObject = meshTrans.gameObject;
+                }
             }
             if (_performerUIController == null)
             {
@@ -128,6 +144,10 @@ namespace AppleteaSystems.StageSyncSystem
             if (_pickupCollider != null)
             {
                 _pickupCollider.enabled = canPickup;
+            }
+            if (_triggerVisualObject != null && _triggerVisualObject.activeSelf != canPickup)
+            {
+                _triggerVisualObject.SetActive(canPickup);
             }
         }
     }

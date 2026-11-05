@@ -525,6 +525,64 @@ namespace AppleteaSystems.StageSyncSystem
             RequestSerialization();
         }
 
+        public string GetLoadedCountDisplayText()
+        {
+            if (_syncedTotalCount <= 0) return _initialLoadedCountText;
+            return $"{_syncedReadyCount}/{_syncedTotalCount}";
+        }
+
+        public Color GetLoadedCountDisplayColor()
+        {
+            Color defaultColor = ParseHexColor(_loadedAllColorCode, _fallbackDefaultTextColor);
+            if (_syncedLoadColorState == LOAD_COLOR_ERROR)
+            {
+                return ParseHexColor(_loadedBelowThresholdColorCode, new Color(0.905f, 0.298f, 0.235f, 1f));
+            }
+            if (_syncedLoadColorState == LOAD_COLOR_WARNING)
+            {
+                return ParseHexColor(_loadedPartialColorCode, new Color(0.901f, 0.494f, 0.133f, 1f));
+            }
+            return defaultColor;
+        }
+
+        public string GetPerformerStatusDisplayText()
+        {
+            switch (_syncedPerformerStatus)
+            {
+                case PERFORMER_STATUS_NONE:
+                    return _performerNoPerformerText;
+                case PERFORMER_STATUS_LOADING:
+                    return _performerLoadingText;
+                case PERFORMER_STATUS_LOADED:
+                    return _performerLoadedText;
+                case PERFORMER_STATUS_ERROR:
+                    return _performerErrorText;
+                default:
+                    return _performerStandbyText;
+            }
+        }
+
+        public bool GetShowPerformerReadyLamp()
+        {
+            return _syncedPerformerStatus == PERFORMER_STATUS_LOADED;
+        }
+
+        public bool GetShowPerformerErrorLamp()
+        {
+            return _syncedPerformerStatus == PERFORMER_STATUS_ERROR;
+        }
+
+        public string GetDelayStatusDisplayText()
+        {
+            bool isFallback = _syncedForceFallbackDelay || _syncedIsFallbackDelay;
+            if (_sssCore != null)
+            {
+                isFallback = _syncedForceFallbackDelay || _sssCore.IsCurrentlyUsingFallbackDelay();
+                _syncedIsFallbackDelay = isFallback;
+            }
+            return isFallback ? _delayFallbackText : _delayOperationalText;
+        }
+
         public void RefreshStatusUI()
         {
             InitializeIfNeeded();
@@ -532,55 +590,18 @@ namespace AppleteaSystems.StageSyncSystem
             // 1. [読み込めた人数]/[全体の人数] と文字色
             if (_loadedPlayerCountText != null)
             {
-                if (_syncedTotalCount <= 0)
-                {
-                    _loadedPlayerCountText.text = _initialLoadedCountText;
-                }
-                else
-                {
-                    _loadedPlayerCountText.text = $"{_syncedReadyCount}/{_syncedTotalCount}";
-                }
-
-                Color defaultColor = ParseHexColor(_loadedAllColorCode, _fallbackDefaultTextColor);
-                if (_syncedLoadColorState == LOAD_COLOR_ERROR)
-                {
-                    _loadedPlayerCountText.color = ParseHexColor(_loadedBelowThresholdColorCode, new Color(0.905f, 0.298f, 0.235f, 1f));
-                }
-                else if (_syncedLoadColorState == LOAD_COLOR_WARNING)
-                {
-                    _loadedPlayerCountText.color = ParseHexColor(_loadedPartialColorCode, new Color(0.901f, 0.494f, 0.133f, 1f));
-                }
-                else
-                {
-                    _loadedPlayerCountText.color = defaultColor;
-                }
+                _loadedPlayerCountText.text = GetLoadedCountDisplayText();
+                _loadedPlayerCountText.color = GetLoadedCountDisplayColor();
             }
 
             // 2. Performer Status テキスト＆ランプオブジェクトのトグル
             if (_performerStatusText != null)
             {
-                switch (_syncedPerformerStatus)
-                {
-                    case PERFORMER_STATUS_NONE:
-                        _performerStatusText.text = _performerNoPerformerText;
-                        break;
-                    case PERFORMER_STATUS_LOADING:
-                        _performerStatusText.text = _performerLoadingText;
-                        break;
-                    case PERFORMER_STATUS_LOADED:
-                        _performerStatusText.text = _performerLoadedText;
-                        break;
-                    case PERFORMER_STATUS_ERROR:
-                        _performerStatusText.text = _performerErrorText;
-                        break;
-                    default:
-                        _performerStatusText.text = _performerStandbyText;
-                        break;
-                }
+                _performerStatusText.text = GetPerformerStatusDisplayText();
             }
 
-            bool showBlueLamp = (_syncedPerformerStatus == PERFORMER_STATUS_LOADED);
-            bool showErrorLamp = (_syncedPerformerStatus == PERFORMER_STATUS_ERROR);
+            bool showBlueLamp = GetShowPerformerReadyLamp();
+            bool showErrorLamp = GetShowPerformerErrorLamp();
 
             if (_performerLoadedObject != null && _performerLoadedObject.activeSelf != showBlueLamp)
             {
@@ -594,25 +615,26 @@ namespace AppleteaSystems.StageSyncSystem
             // 3. 遅延計算ステータス (Operational / Fallback)
             RefreshDelayStatusUI();
 
-            // 4. 演者端末UIへもロード進捗を同期反映
+            // 4. 演者端末UIへもステータス・ロード進捗を同期反映
             if (_performerUIController != null)
             {
                 _performerUIController.OnLoadProgressUpdated(_syncedReadyCount, _syncedTotalCount);
+                _performerUIController.RefreshStatusFromMainUI();
             }
         }
 
         public void RefreshDelayStatusUI()
         {
-            if (_delayStatusText == null) return;
-
-            bool isFallback = _syncedForceFallbackDelay || _syncedIsFallbackDelay;
-            if (_sssCore != null)
+            string delayText = GetDelayStatusDisplayText();
+            if (_delayStatusText != null)
             {
-                isFallback = _syncedForceFallbackDelay || _sssCore.IsCurrentlyUsingFallbackDelay();
-                _syncedIsFallbackDelay = isFallback;
+                _delayStatusText.text = delayText;
             }
 
-            _delayStatusText.text = isFallback ? _delayFallbackText : _delayOperationalText;
+            if (_performerUIController != null)
+            {
+                _performerUIController.RefreshStatusFromMainUI();
+            }
         }
 
         #endregion
