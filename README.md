@@ -1,80 +1,108 @@
 # Stage-Sync-System
+![Stage Sync System Logo](Assets/Appletea's%20Item/Stage%20Sync%20System/v2.0/Texture/Stage%20Sync%20System%20Logo%20v1.5.png)
+
+> [!NOTE]
+> システム全体の詳細な内部設計・遅延計算アルゴリズムの仕様については、Root直下の **[DOCUMENTATION.md](DOCUMENTATION.md)** を参照してください。
 
 ## 概要
-イベント等でパフォーマンスをする人向けVRChat向けのワールドギミックです。
-音源、演出、動画を各Player間で同期し、演者と観客のタイムラグを考慮したオフセットも設定できます。
+イベント等でパフォーマンスをする人向けのVRChatワールドギミックです。
+演出と動画再生を各プレイヤー間で同期し、演者と観客間の通信・IK補間遅延を吸収するオフセットを自動計算・適用できるシステムとなっています。
 
-## 機能紹介
- - 観客遅延制御機能<br>
-  演者の動きの遅延を考慮したタイミングずらしが可能となっています。「Performer Space」のCollider内に入った時に「Core」で設定した時間(ms)タイミングが速くなるように調整されています。 
- - 自動同期<br>
-  動画が読み込まれてから演出が開始されるようになっており、全員が同期された状態で上映できます。 
- - 演出管理機能<br>
-  演出に「DirectionObject」U#Scriptを付けることでシステムが自動的に演出を認識してリストに組み込んでくれます。演出名と再生する動画のURLを各演出に登録できます。
- - 専用のUI<br>
-  Editor(Unityの編集画面)とVRChatでの操作盤を独自のUIで用意しました。現在、自動読み込みされている演出とiwaSyncとの連携状況がEditorから確認できます。
- - 外部操作防止用Collider<br>
-  VRChatの仕様でUIへRaycastが遠方から届いてしまい誤操作を招く問題があるため、UIの周囲をColliderで囲ってあります。
+## 更新履歴
+- **v2.0(2026/11/06 リリース)**
+  - **動的遅延計算アルゴリズム**: 時計ズレ（クロックスキュー $\delta$）を吸収する双方向三角測量法を採用。追加で2人インスタンス用折半方式を実装
+  - **読み込み状態監視・エラーハンドリング強化**: タイムアウト監視、観客・演者の読み込み状態の監視機能を追加。それに伴い、全員のロード確認が取れたらすぐに再生開始できる。加えてエラーによる再生キャンセル機構を追加(進行不能の回避策として、観客や演者の読み込みエラーを無視して上演開始できるオーバーライド機能（次回1回のみ/常時対応）も搭載)
+  - **演者用操作端末 (Performer Portable UI & 自動帰還トリガー)**: スタッフ不在時でも演者が壇上で自然に演出予約・即時発火・強制スタート・緊急停止を行える親子分離型（半設置型親機＋自動帰還型小型リモコン子機）端末を実装。完全なEvent-driven方式、近接検知表示、Owner委譲アーキテクチャ、正常終了時のみ次曲へ進む仕組みを搭載
+  - **Runtime演出手動ソート機能 (Runtime Manual D&D Sort)**: Editor上のみならず、動作中のシステム内UIで演出を手動ソートできる機能を実装。VRでも直感的に操作可能
+  - **2種類の動画プレイヤーに対応**: IwasyncだけでなくYamaPlayerへのネイティブ対応およびそれぞれの動画プレイヤーへの自動検知ブリッジを追加
+  - **UI全面刷新**: 演出ソート（Hierarchy / 名前 / GameObject名 / Manual）、ステータスランプ（Ready/Warning）、上演中設定ロック機能を追加
+  - **操作エリア判定 (UIOperatorChecker)**: 操作盤周囲のコライダーにより、枠外からの遠隔Raycast誤操作を物理コライダー無効化で完全遮断
+  - **演者専用オブジェクト切り替え (Performer Object Toggle)**: 演者のみ/観客のみ表示するオブジェクトの自動トグルとSSS関連システム誤設定防止機能搭載
+- **v1.0 (2024/09/02 リリース)**
+  - 初版リリース
+  - iwaSync3との連携による動画・演出同期
+  - 固定オフセットによる観客遅延制御
+  - Event-driven型同期・LateJoiner基本対応
+  - 基本操作UIおよびEditor拡張の実装
 
-## 仕様
- - Event driven型システム<br>
-  Event driven型システムで必要な時に同期処理が走るため上映中は低負荷での運用が可能です。
- - LateJoiner対応<br>
-  Joinしてから読み込まれるまで同期を取るためJoin直後でも高精度な同期を実現します。
- - iwaSyncの導入が前提<br>
-  本プログラムはiwaSyncの導入が前提です。
+## 主要機能
+- **動的遅延計算 & 観客遅延制御**
+  - インスタンス内のプレイヤー間でNetworkCallableによる双方向Ping送受信を行い、端末間の時計ズレ（クロックスキュー $\delta$）を吸収
+  - 3人以上では**双方向三角測量法（Bidirectional Triangulation）**、2人では**双方向ペア遅延折半方式**により動的に片道遅延を算出
+  - 演者エリア（`Performer Space`）に入ったプレイヤーは先読み再生（`+Offset`）、観客は遅延再生（`-Offset`）することで、観客視点で演者のダンスと音源・映像を数十ミリ秒単位で調整
+- **全プレイヤー動画事前ロード待機同期 & エラーハンドリング**
+  - 動画が全員（または許容閾値以上）に読み込まれ、0秒地点で準備が完了したことを確認してから一斉に再生開始
+  - 演者の読み込み失敗、または全体の失敗率50%(デフォルト設定)以上で再生をキャンセルし、曲が聴けない状態での開始事故を防止
+  - 誰かが動画を読み込めないことによる進行不能を回避するため、読み込みエラーを無視して上演を開始できるオーバーライド機能（Force Launch：次回1回のみ/常時対応）を搭載
+- **UI全面刷新 & 操作保護**
+  - 演出ソート機能（Hierarchy順、名前順、GameObject名順、Manual順）
+  - **Runtime演出手動ソート機能 (Runtime Manual D&D Sort)**: 従来はEditor上でのみ並べ替えが可能だったものを、ソートモードがManualの場合にVRによるドラッグ＆ドロップ（D&D）や▲/▼ボタンで直感的に演出順序を並び替え可能に
+  - 遅延計算モード切り替え（Default / Fallback）
+  - 人数・成否ステータス表示（`Loaded Player`、`Performer Status`、`Delay Status`）およびステータスランプ（Ready / Warning）
+  - 上演中設定ロック機能（上演中の誤操作を防止）
+- **演者用操作端末 (Performer Portable UI & 自動帰還トリガー)**
+  - スタッフ不在時でも演者が壇上で自然に演出予約・即時発火・強制スタート・緊急停止を行える親子分離型端末
+  - 親機（半設置型パネル）: 演者接近時のみ表示（近接検知）、位置固定（Position Lock）、演出予約、進行不能回避（Force Launch）、緊急停止機能
+  - 子機（小型リモコン）: 立ち位置へ持ち込み、`Use` 操作で予約演出を発火。発火後または手放した瞬間に親機のホルスターへ自動帰還
+  - 完全なEvent-driven方式、Owner委譲アーキテクチャ、正常終了時のみ次曲へ進むスマート・キューを搭載
+- **2種類の動画プレイヤーに対応**
+  - **YamaPlayer** および **iwaSync3** の双方にネイティブ対応。自動検知ブリッジコンポーネントによりイベントを疎結合に中継
+- **演出管理・Timeline自動追従**
+  - シーン上の演出オブジェクトに `DirectionObject` を付けるだけで自動認識
+  - 上演中は毎フレーム動画の再生時間とTimelineの時間を監視し、ズレが発生した場合は自動補正
+  - 演者側の視界負荷軽減・視認性確保のため、演者端末でのみ演出を非表示にするトグル（`PlayForPerformer`）を搭載
+  - **操作エリア判定 (UIOperatorChecker)**: 操作盤周囲のコライダーにより、枠外からの遠隔Raycast誤操作を物理コライダー無効化で完全遮断
+- **演者専用オブジェクト切り替え (Performer Object Toggle)**
+  - 演者のみ/観客のみ表示するオブジェクト（返しモニターや立ち位置目印等）の自動切り替え
+  - SSS関連システムオブジェクトの誤設定を自動検知して除外する誤設定防止機能を搭載
+- **エディタ拡張 & 自動ビルドプロセス**
+  - インスペクターからの直感的な演出並び替え（`ReorderableList`）とUIボタンの自動生成・結線
+  - ルートオブジェクトのInspector上で各種システムパラメータ（基本システム遅延、フォールバック遅延、同期許容誤差、ロード待機タイムアウト、上演中断エラー率閾値等）の直接編集およびデフォルトリセットが可能
+  - ワールドビルド時およびPlayモード突入時の自動検証・配線パイプライン（`StageSyncSystemBuildProcess`）
 
 ## 内容物
-本システムは以下のScript群で構成されます。<br>
-Assets<br>
-└Appletea's Item<br>
- └Stage Sync System<br>
-  └v1.0<br>
-　   ├Editor<br>
- 　  │ └StageSyncSystem_Editor.cs<br>
- 　  ├Material<br>
- 　  │ └Performer Space.mat<br>
- 　  ├Script<br>
-　   │ ├DirectionController.asset<br>
- 　  │ ├DirectionController.cs<br>
-　   │ ├DirectionObject.asset<br>
-　   │ ├DirectionObject.cs<br>
-　   │ ├DirectionSwitch.asset<br>
-　   │ ├DirectionSwitch.cs<br>
-　   │ ├PerformerChecker.asset<br>
-　   │ ├PerformerChecker.cs<br>
-　   │ ├SSSCore.asset<br>
-　   │ └SSSCore.cs<br>
-　   ├Stage Sync System.prefab<br>
-　   └Texture<br>
-　   　 └UI_Splite.png<br>
-
+```
+Assets/Appletea's Item/Stage Sync System/v2.0/
+├─ Editor/
+│  └─ StageSyncSystem_Editor.cs         # インスペクター拡張・UI自動生成・ビルド前処理
+├─ Material/
+├─ Script/
+│  ├─ DirectionController.cs            # ルートコンポーネント (エディタ連携・互換性)
+│  ├─ DirectionObject.cs                # 演出オブジェクト定義コンポーネント
+│  ├─ DirectionSwitch.cs                # 物理スイッチ用トリガーコンポーネント
+│  ├─ PerformerChecker.cs               # 演者コライダー判定コンポーネント
+│  ├─ SSSCore.cs                        # システムコアロジック (同期・遅延計算・動画制御)
+│  ├─ SSSIwaSyncBridge.cs               # iwaSync3 イベント受信ブリッジ
+│  ├─ SSSManualSortItem.cs              # Runtime手動ソート各行アイテム制御
+│  ├─ SSSPerformerProximityChecker.cs   # 演者端末の近接検知・表示制御
+│  ├─ SSSPerformerTrigger.cs            # 演者端末の自動帰還トリガー子機制御
+│  ├─ SSSPerformerUIController.cs       # 演者用操作端末の親機UI制御
+│  ├─ SSSRuntimeManualSorter.cs         # Runtime手動ソート(D&D)制御
+│  ├─ SSSUIController.cs                # インワールドUI管理・ソート・進行不能回避オーバーライド
+│  ├─ SSSYamaBridge.cs                  # YamaPlayer イベント受信ブリッジ
+│  └─ UIOperatorChecker.cs              # UI操作可能エリア判定・外部Raycast遮断
+├─ Texture/                             # UIスプライト・アイコン画像群
+└─ Stage Sync System.prefab             # システム全体を包括したオールインワンプレハブ
+```
 
 ## 使い方
 ### 導入方法
- - Prefabの配置<br>
-Scene上に「Stage Sync System.prefab」を配置します。<br>
-Prefabは主に、<br>
-①UI<br>
-②Performer Space<br>
-で構成されます。<br>
-![](Images/Prefab.png)<br>
-UIは任意の位置に配置し、Performer Spaceは演者が移動する範囲に設置してください。設置後は付属のMesh RendererとMesh Filterコンポーネントを削除してください。
- - IwaSyncの連携確認<br>
- ![](Images/Direction_Controller.png)<br>
-「Stage Sync System.prefab」のRootから現在のシステムのステータスが確認できます。<br>
-IwaSyncがScene上に存在しない、あるいは非表示になっている場合はIwaSyncをScene上に配置し、表示してください。
-すると表示が「Linked」に変化します。
- - 演出の設定<br>
- 「演出」とは、現在Playerble Directorが付属するアクティブにした際に演出が流れるObjectのことを指します。(今後Animatiorが付属したものにも対応予定)<br>
- 演出を設定するにはまずScene上の演出オブジェクトにDirection ObjectのScriptをアタッチしてください。<br>
- ![](Images/Direction_Object.png)<br>
-Direction NameからUIに表示させる演出名とVideo URLから再生する動画のURLを設定します。
- - 演出の読み込み<br>
- 演出の設定が終わったら演出を本システムに認識させます。<br>
-  ![](Images/Direction_Controller_Attached.png)<br>
-再度Stage Sync SystemのRootを選択して演出一覧に設定した演出がすべて表示されていることを確認します。(演出は非表示の場合でも認識されます。)<br>
-以上の操作の後、ワールドをアップロードすればご利用いただけます。
+1. **Prefabの配置**
+   Scene上に `Stage Sync System.prefab` を配置
+2. **エリアとUIの配置**
+   - `UI` を操作しやすい位置へ移動
+   - `Performer Space` を演者がパフォーマンスを行うステージ範囲に合わせて拡大・設置（設置後はMesh Rendererを無効化または削除）
+3. **動画プレイヤーの連携確認**
+   Scene上に YamaPlayer または iwaSync3 を配置してアクティブ化
+   `Stage Sync System` のルートを選択してインスペクター上で「Linked」と表示されていることを確認
+4. **演出の設定**
+   Scene上の演出オブジェクト（`PlayableDirector` 付属）に `DirectionObject` スクリプトをアタッチし、演出名（`Direction Name`）と動画URL（`Video URL`）を設定
+5. **演出の読み込み**
+   `Stage Sync System` のルートを選択すると、エディタが演出を自動認識し、UIボタン群を自動生成
+6. **パラメータの調整（任意）**
+   `Stage Sync System` のルートを選択し、インスペクターの「パラメータ設定 (Manual Parameters)」から基本システム遅延、タイムアウト秒数、上演中断エラー率閾値（%）などを自由に調整可能
+
+詳細な技術解説・アルゴリズム仕様については **[DOCUMENTATION.md](DOCUMENTATION.md)** を参照
 
 ## 利用規約
- - MIT Licence
+- MIT License

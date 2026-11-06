@@ -1,0 +1,2570 @@
+using System;
+using UnityEngine;
+using UnityEngine.Playables;
+using VRC.SDKBase;
+using VRC.SDK3.Data;
+using VRC.SDK3.Components.Video;
+using VRC.SDK3.Video.Components.Base;
+using VRC.SDK3.UdonNetworkCalling;
+using VRC.Udon.Common.Interfaces;
+using Yamadev.YamaStream;
+using HoshinoLabs.IwaSync3.Udon;
+using UdonSharp;
+
+namespace AppleteaSystems.StageSyncSystem
+{
+    public enum VideoPlayerType
+    {
+        YamaPlayer,
+        IwaSync
+    }
+
+    [UdonBehaviourSyncMode(BehaviourSyncMode.Manual)]
+    public class SSSCore : UdonSharpBehaviour
+    {
+        [Header("Video Player Core")]
+        [SerializeField]
+        [Tooltip("YamaPlayer")]
+        Controller YamaPlayer_controller;
+
+        [SerializeField]
+        [Tooltip("IwaSync3")]
+        VideoCore Iwasync_core;
+
+        [SerializeField, HideInInspector]
+        SSSYamaBridge _yamaBridge;
+
+        [SerializeField, HideInInspector]
+        SSSIwaSyncBridge _iwaSyncBridge;
+
+        [SerializeField, HideInInspector]
+        SSSUIController _uiController;
+
+        [SerializeField, HideInInspector]
+        SSSPerformerUIController _performerUIController;
+
+        [Header("General Settings")]
+        [SerializeField]
+        DirectionObject[] _directions;
+
+        [SerializeField]
+        VideoPlayerType _videoPlayerType = VideoPlayerType.YamaPlayer;
+
+        [Header("Performer Object Toggle")]
+        [SerializeField]
+        [Tooltip("演者エリア内でのみ有効化するオブジェクト群（演者時 ON / 観客時 OFF）")]
+        GameObject[] _performerEnableObjects;
+
+        [SerializeField]
+        [Tooltip("演者エリア内でのみ無効化するオブジェクト群（演者時 OFF / 観客時 ON）")]
+        GameObject[] _performerDisableObjects;
+
+        [Header("Manual Parameters")]
+        [SerializeField]
+        [Tooltip("Milliseconds (VRChat avatar IK interpolation & pipeline base delay added to dynamic latency calculation)")]
+        int BaseSystemDelay = 260;
+
+        [SerializeField]
+        [Tooltip("Milliseconds (Fallback delay when dynamic latency calculation is unavailable or forced to fallback)")]
+        int AudienceDelays = 370;
+
+        [SerializeField]
+        [Tooltip("Timeline sync drift threshold in seconds")]
+        float SyncAccuracy = 0.04f;
+
+        [SerializeField]
+        [Tooltip("Maximum seconds to wait for all players to finish loading the video")]
+        float ReadyTimeout = 15.0f;
+
+        [SerializeField, Range(0f, 100f)]
+        [Tooltip("Percentage of players failing to load required to abort stage playback (0-100%)")]
+        float ErrorAbortThreshold = 50.0f;
+
+        // Synced Variables
+        [UdonSynced, FieldChangeCallback(nameof(PlayingObjectIndex))]
+        int _playingObjectIndex = -1;
+
+        [UdonSynced]
+        bool _isWaitingForReady = false;
+
+        [UdonSynced]
+        bool _isStagePlaying = false;
+
+        [UdonSynced]
+        int _playbackSessionId = 0;
+
+        [UdonSynced]
+        int _stageStartServerTime = 0;
+
+        [UdonSynced]
+        bool _stageStartedInFallback = false;
+
+        // Local Variables
+        bool _isPerformer = false;
+        bool _isInsidePerformerArea = false;
+        const uint _MODE_VIDEO = 0x00000010;
+        const float _VRC_VIDEO_LOAD_COOLDOWN = 5.25f;
+        const float _VIDEO_SEEK_THRESHOLD = 0.005f;
+        const float _AVPRO_SEEK_LAG_COMPENSATION = 0.034f;
+        float _volumeTemp = 0.5f;
+        bool _isMutedBySSS = false;
+        int _activeDirectionIndex = -1;
+        int _localLoadingSessionId = -1;
+        int _localReadySessionId = -1;
+        int _localErrorSessionId = -1;
+        int _localStartedSessionId = -1;
+        float _loadingStartTime = 0f;
+        float _lastVideoPlayUrlTime = -10f;
+        int _pendingLoadSessionId = -1;
+        bool _isWaitingForCooldownLoad = false;
+        bool _isInternalVideoStop = false;
+
+        // Ready & Error Tracking (Owner / All)
+        DataList _expectedPlayerIds = new DataList();
+        DataList _readyPlayerIds = new DataList();
+        DataList _failedPlayerIds = new DataList();
+        DataList _performerPlayerIds = new DataList();
+
+        // Latency Calculation (Bidirectional clock-skew-canceled triangulation & 2-player pair method via NetworkCallable)
+        DataDictionary _pairDelays = new DataDictionary();
+        DataDictionary _directedPairDelays = new DataDictionary();
+        DataDictionary _directedPairPrev1 = new DataDictionary();
+        DataDictionary _directedPairPrev2 = new DataDictionary();
+        DataList _knownPlayers = new DataList();
+        float _networkDelay = 0f;
+        bool _hasMeasuredNetworkDelay = false;
+        bool _isStageOffsetLocked = false;
+        bool _hasPendingLatencyUpdate = false;
+
+        // UI / Force Launch / Fallback Settings
+        bool _ignoreThresholdError = false;
+        bool _ignorePerformerError = false;
+        bool _useFallbackDelay = false;
+
+        #region Accessor
+
+        public DirectionObject[] Directions
+        {
+            get => _directions;
+            set => _directions = value;
+        }
+
+        public Controller YamaPlayerController
+        {
+            get => YamaPlayer_controller;
+            set => YamaPlayer_controller = value;
+        }
+
+        public VideoCore IwasyncCore
+        {
+            get => Iwasync_core;
+            set => Iwasync_core = value;
+        }
+
+        public SSSYamaBridge YamaBridge
+        {
+            get => _yamaBridge;
+            set => _yamaBridge = value;
+        }
+
+        public SSSIwaSyncBridge IwaSyncBridge
+        {
+            get => _iwaSyncBridge;
+            set => _iwaSyncBridge = value;
+        }
+
+        public SSSUIController UIController
+        {
+            get => _uiController;
+            set => _uiController = value;
+        }
+
+        public SSSPerformerUIController PerformerUIController
+        {
+            get => _performerUIController;
+            set => _performerUIController = value;
+        }
+
+        public VideoPlayerType PlayerType
+        {
+            get => _videoPlayerType;
+            set => _videoPlayerType = value;
+        }
+
+        public float NetworkDelay => _networkDelay;
+        public int PlaybackSessionId => _playbackSessionId;
+        public bool IsWaitingForReady => _isWaitingForReady;
+        public bool IsStagePlaying => _isStagePlaying;
+        public bool IsLoadingOrPlaying => _isWaitingForReady || _isStagePlaying;
+        public float CurrentVideoTime => GetCurrentVideoTime();
+        public float CurrentVideoDuration => DebugVideoDuration;
+
+        public void ApplyForceLaunchSettingsFromUI(bool ignoreThreshold, bool ignorePerformer)
+        {
+            _ignoreThresholdError = ignoreThreshold;
+            _ignorePerformerError = ignorePerformer;
+        }
+
+        public bool IgnoreThresholdError
+        {
+            get => _ignoreThresholdError;
+            set
+            {
+                if (IsLoadingOrPlaying || _ignoreThresholdError == value) return;
+                _ignoreThresholdError = value;
+            }
+        }
+
+        public bool IgnorePerformerError
+        {
+            get => _ignorePerformerError;
+            set
+            {
+                if (IsLoadingOrPlaying || _ignorePerformerError == value) return;
+                _ignorePerformerError = value;
+            }
+        }
+
+        public bool UseFallbackDelay
+        {
+            get => _useFallbackDelay;
+            set
+            {
+                if (IsLoadingOrPlaying || _useFallbackDelay == value) return;
+                _useFallbackDelay = value;
+                ApplyOffset();
+                if (!_useFallbackDelay && HasActivePerformer())
+                {
+                    RequestLatencyUpdate();
+                }
+
+                if (_uiController != null)
+                {
+                    _uiController.RefreshDelayStatusUI();
+                }
+            }
+        }
+
+        public bool IsCurrentlyUsingFallbackDelay()
+        {
+            if (_useFallbackDelay) return true;
+            int playerCount = VRCPlayerApi.GetPlayerCount();
+            // インスタンス人数が1人の場合は通信相手が存在せず遅延計算が不可能なためFallback表記（2人以上はOperational）
+            if (playerCount < 2) return true;
+            // 上演開始時点でFallback開始だった場合、または演者がいるにもかかわらず遅延計測値が未取得の場合もFallback表記
+            if (_isStagePlaying && (_stageStartedInFallback || (HasActivePerformer() && !_hasMeasuredNetworkDelay))) return true;
+            return false;
+        }
+
+        public GameObject[] PerformerEnableObjects
+        {
+            get => _performerEnableObjects;
+            set => _performerEnableObjects = value;
+        }
+
+        public GameObject[] PerformerDisableObjects
+        {
+            get => _performerDisableObjects;
+            set => _performerDisableObjects = value;
+        }
+
+        public bool IsPerformer
+        {
+            get => _isPerformer;
+            set
+            {
+                _isInsidePerformerArea = value;
+
+                // 演出の読み込み中または上演中は、演者がステージ端へ移動してトリガーから一時退出しても上演終了まで演者状態をロックする
+                if (!value && IsLoadingOrPlaying && _isPerformer)
+                {
+                    return;
+                }
+
+                if (_isPerformer == value) return;
+                _isPerformer = value;
+                ApplyOffset();
+                ApplyPerformerObjects();
+                SyncLocalPerformerState();
+                if (_performerUIController != null)
+                {
+                    _performerUIController.OnPerformerRoleChanged(_isPerformer);
+                }
+                if (_isStagePlaying && !_isWaitingForReady && IsVideoPlayerPlaying())
+                {
+                    SeekLocalVideoToCurrentStageTime();
+                    SyncActiveDirection(true);
+                    SyncTimelineToTargetStageTime();
+                    SendCustomEventDelayedSeconds(nameof(DelayedTimelineForceSync), 0.35f);
+                }
+            }
+        }
+
+        public int PlayingObjectIndex
+        {
+            get => _playingObjectIndex;
+            set => _playingObjectIndex = value;
+        }
+
+        #region Debug Telemetry Accessors (Removable after testing)
+
+        public int StageStartServerTime => _stageStartServerTime;
+        public int BaseSystemDelayMs => BaseSystemDelay;
+        public int AudienceDelaysMs => AudienceDelays;
+        public float SyncAccuracySeconds => SyncAccuracy;
+        public bool HasMeasuredNetworkDelay => _hasMeasuredNetworkDelay;
+        public DataList KnownPlayers => _knownPlayers;
+        public DataList PerformerPlayerIds => _performerPlayerIds;
+        public DataDictionary DirectedPairDelays => _directedPairDelays;
+        public DataDictionary DirectedPairRawDelays => _directedPairPrev1;
+        public DataDictionary UndirectedPairDelays => _pairDelays;
+        public float DebugAppliedOffsetSeconds => GetOffsetSeconds();
+        public float DebugTargetStageVideoTime => GetTargetStageVideoTime();
+        public float DebugCurrentVideoTime => GetCurrentVideoTime();
+
+        public float DebugVideoDuration
+        {
+            get
+            {
+                if (IsUsingYamaPlayer()) return YamaPlayer_controller.Duration;
+                if (IsUsingIwaSync()) return Iwasync_core.duration;
+                return 0f;
+            }
+        }
+
+        public bool DebugIsVideoLooping
+        {
+            get
+            {
+                if (IsUsingYamaPlayer()) return YamaPlayer_controller.Loop;
+                return false;
+            }
+        }
+
+        public float DebugUnshiftedStageVideoTime
+        {
+            get
+            {
+                if (!_isStagePlaying || _stageStartServerTime == 0) return 0f;
+                float elapsed = Mathf.Max(0f, (Networking.GetServerTimeInMilliseconds() - _stageStartServerTime) / 1000f);
+                float duration = DebugVideoDuration;
+                if (duration > 0f && !float.IsInfinity(duration))
+                {
+                    if (DebugIsVideoLooping) return elapsed % duration;
+                    return Mathf.Clamp(elapsed, 0f, duration);
+                }
+                return elapsed;
+            }
+        }
+
+        public float DebugCurrentTimelineTime
+        {
+            get
+            {
+                if (!_isStagePlaying || _directions == null || _playingObjectIndex < 0 || _playingObjectIndex >= _directions.Length) return 0f;
+                DirectionObject dir = _directions[_playingObjectIndex];
+                if (dir == null || dir.playableDirector == null || !dir.gameObject.activeSelf) return 0f;
+                return (float)dir.playableDirector.time;
+            }
+        }
+
+        #endregion
+
+        #endregion
+
+        void Start()
+        {
+            InitializeBridges();
+            InitializeVolumeTemp();
+            ApplyPerformerObjects();
+
+            if (_directions != null)
+            {
+                foreach (DirectionObject dir in _directions)
+                {
+                    if (dir == null) continue;
+                    DirectionSetting(dir, false);
+                    dir.playableDirector.playOnAwake = true;
+                }
+            }
+
+            if (_uiController != null)
+            {
+                _uiController.RefreshDelayStatusUI();
+            }
+
+            if (_performerUIController != null)
+            {
+                _performerUIController.RefreshViewState();
+            }
+        }
+
+        public override void OnPlayerJoined(VRCPlayerApi player)
+        {
+            if (Utilities.IsValid(player) && !player.isLocal)
+            {
+                if (_isStagePlaying && !_isWaitingForReady)
+                {
+                    // 上演中に新規プレイヤーが入室した場合は既存プレイヤーのオフセット更新を保留し、上演終了後に再計算する
+                    _hasPendingLatencyUpdate = true;
+                }
+
+                if (Networking.IsOwner(gameObject))
+                {
+                    RequestSerialization();
+                    // 上演中に動画プレイヤー側の RequestSerialization を呼ぶと既存全員に強制シーク(DoSync)が走るため非再生時のみ実行
+                    if (!_isStagePlaying)
+                    {
+                        if (IsUsingIwaSync() && Iwasync_core.isOwner)
+                        {
+                            Iwasync_core.RequestSerialization();
+                        }
+                        else if (IsUsingYamaPlayer() && Networking.IsOwner(YamaPlayer_controller.gameObject))
+                        {
+                            YamaPlayer_controller.RequestSerialization();
+                        }
+                    }
+                }
+
+                if (_isPerformer)
+                {
+                    SyncLocalPerformerState();
+                }
+            }
+
+            if (Utilities.IsValid(player) && player.isLocal)
+            {
+                ApplyOffset();
+                SendCustomEventDelayedSeconds(nameof(RequestLatencyUpdate), 1.5f);
+            }
+
+            if (_uiController != null)
+            {
+                _uiController.RefreshDelayStatusUI();
+            }
+        }
+
+        public override void OnPlayerLeft(VRCPlayerApi player)
+        {
+            bool hadPerformer = HasActivePerformer();
+            if (Utilities.IsValid(player))
+            {
+                int leftId = player.playerId;
+                RemoveFromList(_knownPlayers, leftId);
+                RemoveFromList(_performerPlayerIds, leftId);
+                RemoveFromList(_expectedPlayerIds, leftId);
+                RemoveFromList(_readyPlayerIds, leftId);
+                RemoveFromList(_failedPlayerIds, leftId);
+            }
+
+            if (_isStagePlaying && !_isWaitingForReady && _isStageOffsetLocked)
+            {
+                _hasPendingLatencyUpdate = true;
+            }
+            else
+            {
+                UpdateNetworkDelay();
+                if (hadPerformer != HasActivePerformer())
+                {
+                    ApplyOffset();
+                }
+            }
+
+            if (_uiController != null)
+            {
+                _uiController.RefreshDelayStatusUI();
+            }
+
+            if (Networking.IsOwner(gameObject) && _isWaitingForReady)
+            {
+                EvaluatePlayersLoadState(false);
+            }
+        }
+
+        public override void OnDeserialization()
+        {
+            if (_isWaitingForReady)
+            {
+                MuteVideoPlayerForLoading();
+                StopAllDirections();
+                if (_uiController != null) _uiController.SetSettingsLocked(true);
+            }
+            else if (_isStagePlaying)
+            {
+                if (_uiController != null) _uiController.SetSettingsLocked(true);
+                RestoreVideoPlayerVolume();
+                // 既に現在のセッションを再生中の既存プレイヤーは、途中参加者入室時のシリアライズで再同期しないように保護
+                if (_localStartedSessionId != _playbackSessionId)
+                {
+                    ApplyOffset();
+                    if (IsVideoPlayerPlaying())
+                    {
+                        _localStartedSessionId = _playbackSessionId;
+                        SyncActiveDirection(true);
+                    }
+                }
+            }
+            else
+            {
+                _isWaitingForCooldownLoad = false;
+                _pendingLoadSessionId = -1;
+                RestoreVideoPlayerVolume();
+                StopAllDirections();
+                OnStagePlaybackEnded();
+            }
+
+            if (_uiController != null)
+            {
+                _uiController.RefreshDelayStatusUI();
+            }
+
+            if (_performerUIController != null)
+            {
+                _performerUIController.RefreshViewState();
+            }
+        }
+
+        void Update()
+        {
+            if (_directions == null || _directions.Length == 0) return;
+
+            if (_isWaitingForReady)
+            {
+                if (_isWaitingForCooldownLoad)
+                {
+                    return;
+                }
+
+                if (IsVideoPlayerPlaying() && IsCurrentDirectionTrackLoaded())
+                {
+                    MuteVideoPlayerForLoading();
+                    if (!IsVideoPlayerPaused())
+                    {
+                        PauseLocalVideoPlayerAtZero();
+                    }
+                    if (_localReadySessionId != _playbackSessionId)
+                    {
+                        ReportLocalPlayerReady();
+                    }
+                }
+
+                if (Networking.IsOwner(gameObject) && Time.time - _loadingStartTime >= ReadyTimeout)
+                {
+                    EvaluatePlayersLoadState(true);
+                }
+                return;
+            }
+
+            if (_isStagePlaying && IsVideoPlayerPlaying())
+            {
+                if (_playingObjectIndex < 0 || _playingObjectIndex >= _directions.Length) return;
+                DirectionObject currentDir = _directions[_playingObjectIndex];
+                if (currentDir == null) return;
+
+                if (!ShouldPlayDirection(currentDir))
+                {
+                    if (currentDir.gameObject.activeSelf || _activeDirectionIndex != -1)
+                    {
+                        SyncActiveDirection(false);
+                    }
+                    return;
+                }
+
+                if (_activeDirectionIndex != _playingObjectIndex || !currentDir.gameObject.activeSelf)
+                {
+                    SyncActiveDirection(true);
+                }
+                else if (!IsVideoPlayerPaused())
+                {
+                    float videoTime = GetCurrentVideoTime();
+                    float timelineTime = (float)currentDir.playableDirector.time;
+                    if (Mathf.Abs(timelineTime - videoTime) >= SyncAccuracy)
+                    {
+                        currentDir.playableDirector.time = videoTime;
+                    }
+                }
+            }
+        }
+
+        #region External Control & Video Lifecycle
+
+        // 外部呼出し用
+        public void StartHandling(int objectIndex)
+        {
+            if (_directions == null || objectIndex < 0 || objectIndex >= _directions.Length) return;
+            if (_directions[objectIndex] == null) return;
+
+            // 起動させた人物がOwnerを取得
+            TakeOwnership();
+
+            // 読み込み開始時点でUI側の設定変数を確定させてロック
+            if (_uiController != null)
+            {
+                _ignoreThresholdError = _uiController.IgnoreThresholdError;
+                _ignorePerformerError = _uiController.IgnorePerformerError;
+                _useFallbackDelay = _uiController.UseFallbackDelay;
+                _uiController.SetSettingsLocked(true);
+            }
+
+            if (Utilities.IsValid(Networking.LocalPlayer))
+            {
+                UpdatePerformerIdList(Networking.LocalPlayer.playerId, _isPerformer);
+            }
+
+            _playbackSessionId++;
+            InitializeLoadingSessionLocal(_playbackSessionId, objectIndex);
+
+            RecordExpectedPlayers();
+            if (_uiController != null)
+            {
+                _uiController.UpdateLoadProgress(
+                    0,
+                    _expectedPlayerIds.Count,
+                    0,
+                    ErrorAbortThreshold,
+                    _performerPlayerIds.Count > 0,
+                    false,
+                    false
+                );
+            }
+            RequestSerialization();
+
+            SendCustomNetworkEvent(NetworkEventTarget.All, nameof(NetOnBeginLoading), _playbackSessionId, objectIndex);
+
+            // VRChatの5秒URLレートリミットおよび先行URL解決との競合を回避して動画ロードを開始
+            RequestVideoLoadForSession(_playbackSessionId, objectIndex, true);
+        }
+
+        public override void OnVideoReady()
+        {
+            if (_isWaitingForReady)
+            {
+                if (_isWaitingForCooldownLoad || !IsCurrentDirectionTrackLoaded()) return;
+                MuteVideoPlayerForLoading();
+                PauseLocalVideoPlayerAtZero();
+                ReportLocalPlayerReady();
+            }
+        }
+
+        public override void OnVideoStart()
+        {
+            if (_isWaitingForReady)
+            {
+                if (_isWaitingForCooldownLoad || !IsCurrentDirectionTrackLoaded())
+                {
+                    // 直前に押した別演出の非同期URL解決が遅れて完了した場合は即座に停止して破棄する
+                    StopLocalVideoPlayer();
+                    return;
+                }
+                MuteVideoPlayerForLoading();
+                PauseLocalVideoPlayerAtZero();
+                ReportLocalPlayerReady();
+                return;
+            }
+
+            if (_isStagePlaying)
+            {
+                RestoreVideoPlayerVolume();
+                ResumeLocalVideoPlayer();
+                ApplyOffset();
+                SeekLocalVideoToCurrentStageTime();
+                SyncActiveDirection(true);
+                SendCustomEventDelayedSeconds(nameof(DelayedForceSync), 1.0f);
+            }
+        }
+
+        public override void OnVideoPlay()
+        {
+            if (_isWaitingForReady)
+            {
+                PauseLocalVideoPlayerAtZero();
+                return;
+            }
+
+            if (_isStagePlaying && _playingObjectIndex >= 0 && _playingObjectIndex < _directions.Length)
+            {
+                DirectionObject currentDir = _directions[_playingObjectIndex];
+                if (currentDir != null && currentDir.gameObject.activeSelf)
+                {
+                    currentDir.playableDirector.time = GetCurrentVideoTime();
+                    currentDir.playableDirector.Play();
+                }
+                SendCustomEventDelayedSeconds(nameof(DelayedForceSync), 1.0f);
+            }
+        }
+
+        public override void OnVideoPause()
+        {
+            if (_isStagePlaying && _playingObjectIndex >= 0 && _playingObjectIndex < _directions.Length)
+            {
+                DirectionObject currentDir = _directions[_playingObjectIndex];
+                if (currentDir != null && currentDir.gameObject.activeSelf)
+                {
+                    currentDir.playableDirector.Pause();
+                }
+            }
+        }
+
+        public void OnVideoStop()
+        {
+            if (_isInternalVideoStop) return;
+
+            // ロード待機中の内部トラック切り替え・DeserializationによるStopイベントでは待機状態を解除しない
+            if (_isWaitingForReady)
+            {
+                StopAllDirections();
+                return;
+            }
+
+            // 上演中に非Owner等のリトライやトラック再同期で一時的にStopが呼ばれた場合、動画プレイヤーが停止状態でなければ維持
+            if (_isStagePlaying && IsUsingYamaPlayer() && !YamaPlayer_controller.Stopped)
+            {
+                return;
+            }
+
+            float currentVol = GetVideoPlayerVolume();
+            if (currentVol > 0.0f && !_isMutedBySSS)
+            {
+                _volumeTemp = currentVol;
+            }
+
+            RestoreVideoPlayerVolume();
+            _isStagePlaying = false;
+            StopAllDirections();
+            OnStagePlaybackEnded();
+
+            if (_performerUIController != null)
+            {
+                _performerUIController.OnStagePlaybackAborted(_playbackSessionId);
+            }
+        }
+
+        public override void OnVideoEnd()
+        {
+            int completedObjectIndex = _playingObjectIndex;
+            _isWaitingForReady = false;
+            _isStagePlaying = false;
+            RestoreVideoPlayerVolume();
+            StopAllDirections();
+            OnStagePlaybackEnded();
+
+            if (_performerUIController != null)
+            {
+                _performerUIController.OnStagePlaybackCompleted(completedObjectIndex);
+            }
+
+            if (Networking.IsOwner(gameObject))
+            {
+                RequestSerialization();
+            }
+        }
+
+        public override void OnVideoLoop()
+        {
+            if (_isStagePlaying && _playingObjectIndex >= 0 && _playingObjectIndex < _directions.Length)
+            {
+                DirectionObject currentDir = _directions[_playingObjectIndex];
+                if (currentDir != null && currentDir.gameObject.activeSelf)
+                {
+                    currentDir.playableDirector.time = GetCurrentVideoTime();
+                    currentDir.playableDirector.Play();
+                }
+                SendCustomEventDelayedSeconds(nameof(DelayedForceSync), 1.0f);
+            }
+        }
+
+        public override void OnVideoError(VideoError videoError)
+        {
+            // 読み込みエラー発生時は失敗ステータスと演者フラグを通知する
+            if (_isWaitingForReady)
+            {
+                if (_isWaitingForCooldownLoad || !IsCurrentDirectionTrackLoaded()) return;
+
+                // VRChatの5秒URLレートリミット(RateLimited)発生時は、YamaPlayer内部の重複ErrorRetryを解除して
+                // SSSCore側のクールダウン管理下で5.25秒後に確実に単一リトライを実行する
+                if (videoError == VideoError.RateLimited && (Time.time - _loadingStartTime + _VRC_VIDEO_LOAD_COOLDOWN < ReadyTimeout))
+                {
+                    StopLocalVideoPlayer();
+                    _lastVideoPlayUrlTime = Time.time;
+                    _isWaitingForCooldownLoad = true;
+                    _pendingLoadSessionId = _playbackSessionId;
+                    SendCustomEventDelayedSeconds(nameof(ProcessPendingVideoLoad), _VRC_VIDEO_LOAD_COOLDOWN);
+                    return;
+                }
+
+                ReportLocalPlayerError();
+            }
+        }
+
+        public void OnVideoSetTime(float time)
+        {
+            if (_isStagePlaying && _playingObjectIndex >= 0 && _playingObjectIndex < _directions.Length)
+            {
+                DirectionObject currentDir = _directions[_playingObjectIndex];
+                if (currentDir != null && currentDir.gameObject.activeSelf)
+                {
+                    currentDir.playableDirector.time = time;
+                }
+            }
+        }
+
+        #endregion
+
+        #region Synchronized Ready, Error Check & Start (NetworkCallable)
+
+        private bool HasActivePerformer()
+        {
+            return _isPerformer || _performerPlayerIds.Count > 0;
+        }
+
+        private void SyncLocalPerformerState()
+        {
+            if (!Utilities.IsValid(Networking.LocalPlayer)) return;
+            int localId = Networking.LocalPlayer.playerId;
+            UpdatePerformerIdList(localId, _isPerformer);
+            SendCustomNetworkEvent(NetworkEventTarget.All, nameof(NetUpdatePerformerState), localId, _isPerformer);
+        }
+
+        [NetworkCallable(100)]
+        public void NetUpdatePerformerState(int playerId, bool isPerformer)
+        {
+            UpdatePerformerIdList(playerId, isPerformer);
+        }
+
+        private void UpdatePerformerIdList(int playerId, bool isPerformer)
+        {
+            bool hadPerformer = _performerPlayerIds.Count > 0;
+
+            if (isPerformer)
+            {
+                if (!_performerPlayerIds.Contains(playerId))
+                {
+                    _performerPlayerIds.Add(playerId);
+                }
+            }
+            else
+            {
+                RemoveFromList(_performerPlayerIds, playerId);
+            }
+
+            bool hasPerformer = _performerPlayerIds.Count > 0;
+            if (!hadPerformer && hasPerformer)
+            {
+                // 演者が0人→1人以上になったタイミングで双方向Pingによる遅延計測を実行
+                RequestLatencyUpdate();
+            }
+
+            if (hadPerformer != hasPerformer)
+            {
+                if (_isStagePlaying && !_isWaitingForReady && _isStageOffsetLocked)
+                {
+                    _hasPendingLatencyUpdate = true;
+                }
+                else
+                {
+                    ApplyOffset();
+                }
+
+                if (_uiController != null)
+                {
+                    if (!_isWaitingForReady && !_isStagePlaying)
+                    {
+                        _uiController.UpdateStandbyPerformerStatus(hasPerformer);
+                    }
+                    else
+                    {
+                        _uiController.RefreshDelayStatusUI();
+                    }
+                }
+            }
+        }
+
+        private void RemoveFromList(DataList list, int value)
+        {
+            int idx = list.IndexOf(value);
+            if (idx >= 0)
+            {
+                list.RemoveAt(idx);
+            }
+        }
+
+        private void InitializeLoadingSessionLocal(int sessionId, int objectIndex)
+        {
+            _localLoadingSessionId = sessionId;
+            _playbackSessionId = sessionId;
+            _playingObjectIndex = objectIndex;
+            _isWaitingForReady = true;
+            _isStagePlaying = false;
+            _stageStartServerTime = 0;
+            _stageStartedInFallback = false;
+            _localReadySessionId = -1;
+            _localErrorSessionId = -1;
+            _localStartedSessionId = -1;
+            _isStageOffsetLocked = false;
+            _hasPendingLatencyUpdate = false;
+            _loadingStartTime = Time.time;
+
+            if (_uiController != null)
+            {
+                _uiController.SetSettingsLocked(true);
+            }
+
+            MuteVideoPlayerForLoading();
+            StopAllDirections();
+        }
+
+        private void RequestVideoLoadForSession(int sessionId, int objectIndex, bool isOwnerLoad)
+        {
+            // 既存の再生や先行クリックのYamaPlayer内部状態・_retryTargetUrlを即座にクリーン停止する
+            StopLocalVideoPlayer();
+
+            float elapsed = Time.time - _lastVideoPlayUrlTime;
+            if (elapsed >= _VRC_VIDEO_LOAD_COOLDOWN)
+            {
+                _isWaitingForCooldownLoad = false;
+                _pendingLoadSessionId = -1;
+                ExecuteVideoLoadNow(sessionId, objectIndex, isOwnerLoad);
+            }
+            else
+            {
+                // 直前のURLロードから5.25秒未満の連打・切り替え時は、RateLimitedおよび先行yt-dlp解決との競合を防ぐため
+                // クールダウン経過後に最新セッションのURLのみを単一ロードする
+                _isWaitingForCooldownLoad = true;
+                _pendingLoadSessionId = sessionId;
+                float waitSeconds = (_VRC_VIDEO_LOAD_COOLDOWN - elapsed) + 0.05f;
+                _loadingStartTime = Time.time + waitSeconds;
+                SendCustomEventDelayedSeconds(nameof(ProcessPendingVideoLoad), waitSeconds);
+                if (isOwnerLoad)
+                {
+                    SendCustomEventDelayedSeconds(nameof(CheckReadyTimeout), waitSeconds + ReadyTimeout);
+                }
+            }
+        }
+
+        public void ProcessPendingVideoLoad()
+        {
+            if (!_isWaitingForReady || !_isWaitingForCooldownLoad) return;
+            if (_pendingLoadSessionId != _playbackSessionId) return;
+
+            float elapsed = Time.time - _lastVideoPlayUrlTime;
+            if (elapsed < _VRC_VIDEO_LOAD_COOLDOWN - 0.05f)
+            {
+                float remaining = (_VRC_VIDEO_LOAD_COOLDOWN - elapsed) + 0.05f;
+                SendCustomEventDelayedSeconds(nameof(ProcessPendingVideoLoad), remaining);
+                return;
+            }
+
+            _isWaitingForCooldownLoad = false;
+            _pendingLoadSessionId = -1;
+            ExecuteVideoLoadNow(_playbackSessionId, _playingObjectIndex, Networking.IsOwner(gameObject));
+        }
+
+        private void ExecuteVideoLoadNow(int sessionId, int objectIndex, bool isOwnerLoad)
+        {
+            if (!_isWaitingForReady || sessionId != _playbackSessionId) return;
+            if (_directions == null || objectIndex < 0 || objectIndex >= _directions.Length) return;
+            DirectionObject dir = _directions[objectIndex];
+            if (dir == null) return;
+
+            // クールダウン待機中に先行クリックのURL解決が完了してAVProがOpen処理に入っていた場合も確実に閉じてから新URLをロードする
+            StopLocalVideoPlayer();
+
+            _lastVideoPlayUrlTime = Time.time;
+            _loadingStartTime = Time.time;
+
+            if (isOwnerLoad)
+            {
+                LoadVideoOnPlayer(objectIndex);
+                SendCustomEventDelayedSeconds(nameof(CheckReadyTimeout), ReadyTimeout);
+            }
+            else
+            {
+                if (IsUsingYamaPlayer())
+                {
+                    bool recentlyLoadedSameTrack = IsCurrentDirectionTrackLoaded() && (Time.time - YamaPlayer_controller.LastLoaded <= 1.5f);
+                    if (!recentlyLoadedSameTrack)
+                    {
+                        YamaPlayer_controller.OnVideoPause();
+                        Track track = Track.New(
+                            YamaPlayer_controller.VideoPlayerType,
+                            dir.directionName,
+                            dir.videoURL
+                        );
+                        YamaPlayer_controller.PlayTrack(track);
+                    }
+                    else if (IsVideoPlayerPlaying())
+                    {
+                        MuteVideoPlayerForLoading();
+                        PauseLocalVideoPlayerAtZero();
+                        ReportLocalPlayerReady();
+                    }
+                }
+                else if (IsUsingIwaSync())
+                {
+                    if (IsCurrentDirectionTrackLoaded() && IsVideoPlayerPlaying())
+                    {
+                        MuteVideoPlayerForLoading();
+                        PauseLocalVideoPlayerAtZero();
+                        ReportLocalPlayerReady();
+                    }
+                }
+            }
+        }
+
+        [NetworkCallable(100)]
+        public void NetOnBeginLoading(int sessionId, int objectIndex)
+        {
+            // 連打時に古いセッションの遅延イベントが後から到着した場合は無視する
+            if (sessionId < _playbackSessionId) return;
+
+            // Owner自身は StartHandling 内で同期的に初期化済みのため、ネットワークループバックによるリセットを防止
+            bool alreadyInitializedOnLocal = (_localLoadingSessionId == sessionId);
+            if (!alreadyInitializedOnLocal)
+            {
+                InitializeLoadingSessionLocal(sessionId, objectIndex);
+                RecordExpectedPlayers();
+            }
+
+            if (_isPerformer)
+            {
+                SyncLocalPerformerState();
+            }
+
+            if (!Networking.IsOwner(gameObject) && !alreadyInitializedOnLocal)
+            {
+                RequestVideoLoadForSession(sessionId, objectIndex, false);
+            }
+
+            // 演者が存在する場合のみ動画ロード時間を利用してインスタンス内の通信遅延を計測
+            if (HasActivePerformer())
+            {
+                TriggerBeaconLatencyPing();
+            }
+
+            if (_uiController != null)
+            {
+                _uiController.RefreshDelayStatusUI();
+            }
+
+            if (_performerUIController != null)
+            {
+                _performerUIController.OnStageLoadingBegan(objectIndex, sessionId);
+            }
+        }
+
+        private void ReportLocalPlayerReady()
+        {
+            if (_localReadySessionId == _playbackSessionId) return;
+            _localReadySessionId = _playbackSessionId;
+
+            int localId = Utilities.IsValid(Networking.LocalPlayer) ? Networking.LocalPlayer.playerId : 1;
+            SendCustomNetworkEvent(
+                NetworkEventTarget.All,
+                nameof(NetNotifyPlayerLoadStatus),
+                _playbackSessionId,
+                localId,
+                true,
+                _isPerformer,
+                Networking.GetServerTimeInMilliseconds()
+            );
+        }
+
+        private void ReportLocalPlayerError()
+        {
+            if (_localReadySessionId == _playbackSessionId) return;
+            if (_localErrorSessionId == _playbackSessionId) return;
+            _localErrorSessionId = _playbackSessionId;
+
+            int localId = Utilities.IsValid(Networking.LocalPlayer) ? Networking.LocalPlayer.playerId : 1;
+            SendCustomNetworkEvent(
+                NetworkEventTarget.All,
+                nameof(NetNotifyPlayerLoadStatus),
+                _playbackSessionId,
+                localId,
+                false,
+                _isPerformer,
+                Networking.GetServerTimeInMilliseconds()
+            );
+        }
+
+        [NetworkCallable(100)]
+        public void NetNotifyPlayerLoadStatus(int sessionId, int playerId, bool isSuccess, bool isPerformer, int sendServerTime)
+        {
+            UpdatePerformerIdList(playerId, isPerformer);
+
+            // 動画ロード完了通知のサーバー時刻をピギーバック活用し、yt-dlp負荷が収まった状態での高精度な片道遅延サンプルを取得する
+            // ただし受信側自身がまだ動画ロード中（AVPro初期化等によるメインスレッドスパイク中）の場合は異常値混入を防ぐため記録しない
+            if (Utilities.IsValid(Networking.LocalPlayer))
+            {
+                int localId = Networking.LocalPlayer.playerId;
+                bool localIsReadyForSession = !_isWaitingForReady || (_localReadySessionId == sessionId);
+                if (localId != playerId && sendServerTime != 0 && localIsReadyForSession)
+                {
+                    int rawDelayMs = Networking.GetServerTimeInMilliseconds() - sendServerTime;
+                    RecordDirectedPairDelay(playerId, localId, rawDelayMs);
+                    UpdateNetworkDelay();
+
+                    int beaconOrder = GetLocalBeaconIndex();
+                    if (beaconOrder >= 0 && beaconOrder < 3)
+                    {
+                        SendCustomNetworkEvent(
+                            NetworkEventTarget.All,
+                            nameof(NetReceiveLatencyRecord),
+                            playerId,
+                            localId,
+                            rawDelayMs
+                        );
+                    }
+                }
+            }
+
+            if (!_isWaitingForReady || sessionId != _playbackSessionId) return;
+
+            if (isSuccess)
+            {
+                RemoveFromList(_failedPlayerIds, playerId);
+                if (!_readyPlayerIds.Contains(playerId))
+                {
+                    _readyPlayerIds.Add(playerId);
+                }
+            }
+            else
+            {
+                if (!_readyPlayerIds.Contains(playerId) && !_failedPlayerIds.Contains(playerId))
+                {
+                    _failedPlayerIds.Add(playerId);
+                }
+            }
+
+            if (Networking.IsOwner(gameObject))
+            {
+                EvaluatePlayersLoadState(false);
+            }
+        }
+
+        private void RecordExpectedPlayers()
+        {
+            _expectedPlayerIds.Clear();
+            _readyPlayerIds.Clear();
+            _failedPlayerIds.Clear();
+
+            int count = VRCPlayerApi.GetPlayerCount();
+            if (count <= 0) return;
+
+            VRCPlayerApi[] players = new VRCPlayerApi[count];
+            VRCPlayerApi.GetPlayers(players);
+            for (int i = 0; i < players.Length; i++)
+            {
+                if (Utilities.IsValid(players[i]))
+                {
+                    _expectedPlayerIds.Add(players[i].playerId);
+                }
+            }
+        }
+
+        private void EvaluatePlayersLoadState(bool isTimeout)
+        {
+            if (!Networking.IsOwner(gameObject) || !_isWaitingForReady) return;
+
+            int totalExpected = 0;
+            int readyCount = 0;
+            int failedCount = 0;
+            int totalPerformers = 0;
+            int readyPerformers = 0;
+            bool performerFailed = false;
+
+            int count = VRCPlayerApi.GetPlayerCount();
+            if (count > 0)
+            {
+                VRCPlayerApi[] players = new VRCPlayerApi[count];
+                VRCPlayerApi.GetPlayers(players);
+                for (int i = 0; i < players.Length; i++)
+                {
+                    VRCPlayerApi player = players[i];
+                    if (!Utilities.IsValid(player)) continue;
+
+                    int pid = player.playerId;
+                    if (_expectedPlayerIds.Count > 0 && !_expectedPlayerIds.Contains(pid))
+                    {
+                        continue;
+                    }
+
+                    totalExpected++;
+                    bool isReady = _readyPlayerIds.Contains(pid);
+                    bool isFailed = _failedPlayerIds.Contains(pid) || (isTimeout && !isReady);
+                    bool isPerf = _performerPlayerIds.Contains(pid);
+
+                    if (isPerf)
+                    {
+                        totalPerformers++;
+                    }
+
+                    if (isReady)
+                    {
+                        readyCount++;
+                        if (isPerf)
+                        {
+                            readyPerformers++;
+                        }
+                    }
+                    else if (isFailed)
+                    {
+                        failedCount++;
+                        if (isPerf)
+                        {
+                            performerFailed = true;
+                        }
+                    }
+                }
+            }
+
+            if (_uiController != null)
+            {
+                bool hasPerformer = totalPerformers > 0;
+                bool allPerformersReady = hasPerformer && readyPerformers >= totalPerformers && !performerFailed;
+                _uiController.UpdateLoadProgress(
+                    readyCount,
+                    totalExpected,
+                    failedCount,
+                    ErrorAbortThreshold,
+                    hasPerformer,
+                    allPerformersReady,
+                    performerFailed
+                );
+            }
+
+            if (_performerUIController != null)
+            {
+                _performerUIController.OnLoadProgressUpdated(readyCount, totalExpected);
+            }
+
+            // 1. 演者が1人でも読み込み失敗（またはタイムアウト未完了）している場合は割合に関係なく再生中止（Force Launchで無効化されていない場合）
+            if (performerFailed && !_ignorePerformerError)
+            {
+                if (_uiController != null) _uiController.ConsumeForceLaunchIfOnce();
+                AbortSynchronizedStagePlayback();
+                return;
+            }
+
+            // 2. 失敗（またはタイムアウト未完了）したプレイヤーの割合が閾値（デフォルト50%）以上の場合は再生中止（Force Launchで無効化されていない場合）
+            if (totalExpected > 0 && failedCount > 0 && !_ignoreThresholdError)
+            {
+                float failureRate = (float)failedCount / totalExpected;
+                float thresholdRatio = Mathf.Clamp01(ErrorAbortThreshold / 100f);
+                if (failureRate >= thresholdRatio)
+                {
+                    if (_uiController != null) _uiController.ConsumeForceLaunchIfOnce();
+                    AbortSynchronizedStagePlayback();
+                    return;
+                }
+            }
+
+            // 3. 全員の応答が揃った場合、またはタイムアウト時点で中止条件に該当しなかった場合は再生開始
+            if (isTimeout || (readyCount + failedCount >= totalExpected))
+            {
+                TriggerStagePlaybackLaunch();
+            }
+        }
+
+        private void TriggerStagePlaybackLaunch()
+        {
+            if (!Networking.IsOwner(gameObject) || !_isWaitingForReady) return;
+            if (_uiController != null) _uiController.ConsumeForceLaunchIfOnce();
+            BeginSynchronizedStagePlayback();
+        }
+
+        public void CheckReadyTimeout()
+        {
+            if (!Networking.IsOwner(gameObject) || !_isWaitingForReady) return;
+            if (Time.time - _loadingStartTime >= ReadyTimeout - 0.1f)
+            {
+                EvaluatePlayersLoadState(true);
+            }
+        }
+
+        private void BeginSynchronizedStagePlayback()
+        {
+            if (!Networking.IsOwner(gameObject) || !_isWaitingForReady) return;
+
+            _isWaitingForReady = false;
+            _isStagePlaying = true;
+            _stageStartServerTime = Networking.GetServerTimeInMilliseconds();
+            _stageStartedInFallback = _useFallbackDelay || (VRCPlayerApi.GetPlayerCount() < 2) || (HasActivePerformer() && !_hasMeasuredNetworkDelay);
+            RequestSerialization();
+
+            if (IsUsingYamaPlayer())
+            {
+                // Owner自身が読み込み失敗している状態で RequestSerialization を呼ぶと _stopped = true が全員へ送信され、
+                // 読み込み完了していた他プレイヤーの動画まで停止してしまうため、Ownerが読み込み完了している場合のみシリアライズする
+                if (!YamaPlayer_controller.Stopped)
+                {
+                    if (!Networking.IsOwner(YamaPlayer_controller.gameObject))
+                    {
+                        Networking.SetOwner(Networking.LocalPlayer, YamaPlayer_controller.gameObject);
+                    }
+                    YamaPlayer_controller.SetTime(0f);
+                    YamaPlayer_controller.Paused = false;
+                    YamaPlayer_controller.SyncTime = 0f;
+                    YamaPlayer_controller.RequestSerialization();
+                }
+                else
+                {
+                    // Owner自身がリトライ待ちの場合は RequestSerialization を発火させずにローカルの _paused のみ解除しておく
+                    YamaPlayer_controller.OnVideoPlay();
+                }
+            }
+            else if (IsUsingIwaSync())
+            {
+                Iwasync_core.TakeOwnership();
+                Iwasync_core.clockTime = _stageStartServerTime;
+                Iwasync_core.time = 0f;
+                Iwasync_core.Play();
+                Iwasync_core.RequestSerialization();
+            }
+
+            if (_uiController != null)
+            {
+                _uiController.RefreshDelayStatusUI();
+            }
+
+            SendCustomNetworkEvent(
+                NetworkEventTarget.All,
+                nameof(NetStartStagePlayback),
+                _playbackSessionId,
+                _playingObjectIndex,
+                _stageStartServerTime,
+                _stageStartedInFallback
+            );
+        }
+
+        private void AbortSynchronizedStagePlayback()
+        {
+            if (!Networking.IsOwner(gameObject) || !_isWaitingForReady) return;
+
+            _isWaitingForReady = false;
+            _isStagePlaying = false;
+            _isWaitingForCooldownLoad = false;
+            _pendingLoadSessionId = -1;
+            _playingObjectIndex = -1;
+            _stageStartServerTime = 0;
+            _stageStartedInFallback = false;
+            RequestSerialization();
+
+            StopVideoOnPlayer();
+
+            if (_uiController != null)
+            {
+                _uiController.SetSettingsLocked(false);
+            }
+
+            SendCustomNetworkEvent(
+                NetworkEventTarget.All,
+                nameof(NetAbortStagePlayback),
+                _playbackSessionId
+            );
+        }
+
+        [NetworkCallable(100)]
+        public void NetRequestStartFromPerformer(int objectIndex, bool ignoreThreshold, bool ignorePerformerError)
+        {
+            if (!Networking.IsOwner(gameObject)) return;
+            // 既にロード待機中または上演中の場合は二重発火を防止
+            if (_isWaitingForReady || _isStagePlaying) return;
+            if (_directions == null || objectIndex < 0 || objectIndex >= _directions.Length) return;
+            if (_directions[objectIndex] == null) return;
+
+            // メインUIへ操作指示を反映し、メインUIを操作した場合と完全に同等の処理を実行する
+            if (_uiController != null)
+            {
+                _uiController.ApplyForceLaunchFromPerformerRequest(ignoreThreshold, ignorePerformerError);
+            }
+            _ignoreThresholdError = ignoreThreshold;
+            _ignorePerformerError = ignorePerformerError;
+
+            StartHandling(objectIndex);
+        }
+
+        [NetworkCallable(100)]
+        public void NetRequestForceLaunchNow(int sessionId)
+        {
+            if (!Networking.IsOwner(gameObject)) return;
+            // セッションID不一致、またはロード待機中でない場合は無視
+            if (!_isWaitingForReady || _playbackSessionId != sessionId) return;
+
+            // エラー判定をバイパスして直ちに上演開始を発火
+            TriggerStagePlaybackLaunch();
+        }
+
+        [NetworkCallable(100)]
+        public void NetRequestStopFromPerformer(int sessionId)
+        {
+            if (!Networking.IsOwner(gameObject)) return;
+            if (_playbackSessionId != sessionId) return;
+            if (!_isWaitingForReady && !_isStagePlaying) return;
+
+            if (_isWaitingForReady)
+            {
+                AbortSynchronizedStagePlayback();
+            }
+            else
+            {
+                _isWaitingForReady = false;
+                _isStagePlaying = false;
+                _isWaitingForCooldownLoad = false;
+                _pendingLoadSessionId = -1;
+                _playingObjectIndex = -1;
+                _stageStartServerTime = 0;
+                _stageStartedInFallback = false;
+                RequestSerialization();
+
+                StopVideoOnPlayer();
+
+                if (_uiController != null)
+                {
+                    _uiController.SetSettingsLocked(false);
+                }
+
+                SendCustomNetworkEvent(
+                    NetworkEventTarget.All,
+                    nameof(NetAbortStagePlayback),
+                    _playbackSessionId
+                );
+            }
+        }
+
+        [NetworkCallable(100)]
+        public void NetAbortStagePlayback(int sessionId)
+        {
+            if (sessionId != _playbackSessionId) return;
+
+            _isWaitingForReady = false;
+            _isStagePlaying = false;
+            _isWaitingForCooldownLoad = false;
+            _pendingLoadSessionId = -1;
+            _playingObjectIndex = -1;
+            _stageStartServerTime = 0;
+            _stageStartedInFallback = false;
+
+            StopLocalVideoPlayer();
+            RestoreVideoPlayerVolume();
+            StopAllDirections();
+            OnStagePlaybackEnded();
+
+            if (_performerUIController != null)
+            {
+                _performerUIController.OnStagePlaybackAborted(sessionId);
+            }
+        }
+
+        [NetworkCallable(100)]
+        public void NetStartStagePlayback(int sessionId, int objectIndex, int startServerTime, bool startedInFallback)
+        {
+            // 直前に押した古いセッションの再生開始イベントが遅れて到着した場合は無視する
+            if (sessionId != _playbackSessionId) return;
+            if (_localStartedSessionId == sessionId) return;
+            _localStartedSessionId = sessionId;
+
+            _isWaitingForCooldownLoad = false;
+            _pendingLoadSessionId = -1;
+            _playbackSessionId = sessionId;
+            _playingObjectIndex = objectIndex;
+            _stageStartServerTime = startServerTime;
+            _stageStartedInFallback = startedInFallback;
+            _isWaitingForReady = false;
+            _isStagePlaying = true;
+            _isStageOffsetLocked = true;
+
+            if (_uiController != null)
+            {
+                _uiController.SetSettingsLocked(true);
+            }
+
+            RestoreVideoPlayerVolume();
+            ResumeLocalVideoPlayer();
+            ApplyOffset();
+            SeekLocalVideoToCurrentStageTime();
+
+            // 動画を正常に読み込めたプレイヤーのみ即座に演出を開始する。
+            // 読み込み失敗（後からリトライで読み込むプレイヤー）は演出のみが先行再生されないよう、OnVideoStart 時点で動画・演出を同時に開始する。
+            if (IsVideoPlayerPlaying() || _localReadySessionId == sessionId)
+            {
+                SyncActiveDirection(true);
+                SyncTimelineToTargetStageTime();
+            }
+            else
+            {
+                StopAllDirections();
+            }
+
+            if (_uiController != null)
+            {
+                _uiController.RefreshDelayStatusUI();
+            }
+
+            if (_performerUIController != null)
+            {
+                _performerUIController.OnStagePlaybackStarted(objectIndex, sessionId);
+            }
+
+            SendCustomEventDelayedSeconds(nameof(DelayedForceSync), 1.0f);
+        }
+
+        public void DelayedForceSync()
+        {
+            if (!_isStagePlaying || _isWaitingForReady) return;
+            ApplyOffset();
+            SeekLocalVideoToCurrentStageTime();
+            SyncTimelineToTargetStageTime();
+            SendCustomEventDelayedSeconds(nameof(DelayedTimelineForceSync), 0.25f);
+            SendCustomEventDelayedSeconds(nameof(DelayedTimelineForceSync), 0.85f);
+        }
+
+        public void DelayedTimelineForceSync()
+        {
+            if (!_isStagePlaying || _isWaitingForReady) return;
+            SyncTimelineToVideoNow();
+        }
+
+        #endregion
+
+        #region Latency Calculation (Bidirectional Triangulation & 2-Player Pair Method)
+
+        public void RequestLatencyUpdate()
+        {
+            if (!Utilities.IsValid(Networking.LocalPlayer)) return;
+            if (!HasActivePerformer() || _useFallbackDelay) return;
+            SendCustomNetworkEvent(NetworkEventTarget.All, nameof(NetRequestBeaconPings));
+            SendLatencyPing();
+        }
+
+        [NetworkCallable(100)]
+        public void NetRequestBeaconPings()
+        {
+            TriggerBeaconLatencyPing();
+        }
+
+        private void TriggerBeaconLatencyPing()
+        {
+            if (!Utilities.IsValid(Networking.LocalPlayer)) return;
+            if (!HasActivePerformer() || _useFallbackDelay) return;
+            int beaconOrder = GetLocalBeaconIndex();
+            if (beaconOrder >= 0 && beaconOrder < 3)
+            {
+                float delay = 0.05f + beaconOrder * 0.15f;
+                SendCustomEventDelayedSeconds(nameof(SendLatencyPing), delay);
+            }
+        }
+
+        public void SendLatencyPing()
+        {
+            if (!Utilities.IsValid(Networking.LocalPlayer)) return;
+            SendCustomNetworkEvent(
+                NetworkEventTarget.All,
+                nameof(NetReceiveLatencyPing),
+                Networking.LocalPlayer.playerId,
+                Networking.GetServerTimeInMilliseconds()
+            );
+        }
+
+        [NetworkCallable(100)]
+        public void NetReceiveLatencyPing(int senderId, int sendServerTime)
+        {
+            if (!Utilities.IsValid(Networking.LocalPlayer)) return;
+            int localId = Networking.LocalPlayer.playerId;
+            if (localId == senderId) return;
+
+            int rawDelayMs = Networking.GetServerTimeInMilliseconds() - sendServerTime;
+
+            RecordDirectedPairDelay(senderId, localId, rawDelayMs);
+            UpdateNetworkDelay();
+
+            int beaconOrder = GetLocalBeaconIndex();
+            if (beaconOrder >= 0 && beaconOrder < 3)
+            {
+                SendCustomNetworkEvent(
+                    NetworkEventTarget.All,
+                    nameof(NetReceiveLatencyRecord),
+                    senderId,
+                    localId,
+                    rawDelayMs
+                );
+            }
+        }
+
+        [NetworkCallable(100)]
+        public void NetReceiveLatencyRecord(int senderId, int receiverId, int delayMs)
+        {
+            // 受信者本人は NetReceiveLatencyPing / NetNotifyPlayerLoadStatus 内で既に記録済みのため重複履歴投入を防ぐ
+            if (Utilities.IsValid(Networking.LocalPlayer) && Networking.LocalPlayer.playerId == receiverId) return;
+            RecordDirectedPairDelay(senderId, receiverId, delayMs);
+            UpdateNetworkDelay();
+        }
+
+        private int GetLocalBeaconIndex()
+        {
+            if (!Utilities.IsValid(Networking.LocalPlayer)) return -1;
+            int localId = Networking.LocalPlayer.playerId;
+            bool localIsPerformer = _isPerformer || _performerPlayerIds.Contains(localId);
+
+            int count = VRCPlayerApi.GetPlayerCount();
+            if (count <= 0) return 0;
+
+            VRCPlayerApi[] players = new VRCPlayerApi[count];
+            VRCPlayerApi.GetPlayers(players);
+
+            // 演者（Performer）を最優先で Beacon 0 に割り当て、残りの枠を playerId 昇順で選出する
+            int higherPriorityCount = 0;
+            for (int i = 0; i < players.Length; i++)
+            {
+                if (!Utilities.IsValid(players[i])) continue;
+                int pid = players[i].playerId;
+                if (pid == localId) continue;
+
+                bool otherIsPerformer = _performerPlayerIds.Contains(pid);
+                if (localIsPerformer)
+                {
+                    if (otherIsPerformer && pid < localId)
+                    {
+                        higherPriorityCount++;
+                    }
+                }
+                else
+                {
+                    if (otherIsPerformer || pid < localId)
+                    {
+                        higherPriorityCount++;
+                    }
+                }
+            }
+            return higherPriorityCount;
+        }
+
+        private string GetPairKey(int player1, int player2)
+        {
+            return player1 < player2 ? $"{player1}_{player2}" : $"{player2}_{player1}";
+        }
+
+        private void RecordDirectedPairDelay(int senderId, int receiverId, int rawDelayMs)
+        {
+            if (senderId == receiverId) return;
+            if (!_knownPlayers.Contains(senderId)) _knownPlayers.Add(senderId);
+            if (!_knownPlayers.Contains(receiverId)) _knownPlayers.Add(receiverId);
+
+            // 異常値保護（時計ズレ δ を相殺できるよう符号付きのまま保持する）
+            int clampedRaw = Mathf.Clamp(rawDelayMs, -2000, 5000);
+            string dirKey = $"{senderId}_{receiverId}";
+            int filteredDirDelay = clampedRaw;
+
+            // 直近3サンプル窓の最小値フィルタにより、動画URL解決(yt-dlp)や入室直後の正方向フレームスパイクを除去する
+            if (_directedPairPrev1.TryGetValue(dirKey, TokenType.Int, out DataToken prev1Token))
+            {
+                int prev1 = prev1Token.Int;
+                filteredDirDelay = Mathf.Min(clampedRaw, prev1);
+                if (_directedPairPrev2.TryGetValue(dirKey, TokenType.Int, out DataToken prev2Token))
+                {
+                    filteredDirDelay = Mathf.Min(filteredDirDelay, prev2Token.Int);
+                }
+                _directedPairPrev2.SetValue(dirKey, prev1);
+            }
+            _directedPairPrev1.SetValue(dirKey, clampedRaw);
+            _directedPairDelays.SetValue(dirKey, filteredDirDelay);
+
+            // 逆方向(receiverId -> senderId)の計測値が存在する場合は双方向平均を取り、クライアント間の時計ズレ δ を完全に相殺する
+            string revKey = $"{receiverId}_{senderId}";
+            int pairDelay;
+            if (_directedPairDelays.TryGetValue(revKey, TokenType.Int, out DataToken revToken))
+            {
+                pairDelay = Mathf.Max(0, (filteredDirDelay + revToken.Int) / 2);
+            }
+            else
+            {
+                pairDelay = Mathf.Max(0, filteredDirDelay);
+            }
+
+            string undirectedKey = GetPairKey(senderId, receiverId);
+            _pairDelays.SetValue(undirectedKey, pairDelay);
+        }
+
+        public int GetDelayWithTwoPlayers(int player1, int player2)
+        {
+            if (player1 == player2) return -1;
+            string key = GetPairKey(player1, player2);
+            if (_pairDelays.TryGetValue(key, TokenType.Int, out DataToken token))
+            {
+                return token.Int;
+            }
+            return -1;
+        }
+
+        public DataDictionary GetMyLatencyRecords()
+        {
+            DataDictionary results = new DataDictionary();
+            if (!Utilities.IsValid(Networking.LocalPlayer)) return results;
+
+            int localId = Networking.LocalPlayer.playerId;
+            for (int i = 0; i < _knownPlayers.Count; i++)
+            {
+                int otherId = _knownPlayers[i].Int;
+                if (otherId == localId) continue;
+
+                VRCPlayerApi otherPlayer = VRCPlayerApi.GetPlayerById(otherId);
+                if (!Utilities.IsValid(otherPlayer)) continue;
+
+                int record = GetDelayWithTwoPlayers(localId, otherId);
+                if (record >= 0)
+                {
+                    results.SetValue(otherId, record);
+                }
+            }
+            return results;
+        }
+
+        private bool HasBidirectionalPairDelay(int player1, int player2)
+        {
+            if (player1 == player2) return false;
+            string keyAB = $"{player1}_{player2}";
+            string keyBA = $"{player2}_{player1}";
+            return _directedPairDelays.ContainsKey(keyAB) && _directedPairDelays.ContainsKey(keyBA);
+        }
+
+        private float ComputeMedianFromBuffer(int[] buffer, int count)
+        {
+            if (count <= 0) return -1f;
+            for (int i = 1; i < count; i++)
+            {
+                int key = buffer[i];
+                int j = i - 1;
+                while (j >= 0 && buffer[j] > key)
+                {
+                    buffer[j + 1] = buffer[j];
+                    j--;
+                }
+                buffer[j + 1] = key;
+            }
+            int mid = count / 2;
+            if ((count % 2) == 1)
+            {
+                return buffer[mid];
+            }
+            return (buffer[mid - 1] + buffer[mid]) * 0.5f;
+        }
+
+        public float GetServerDelaySeconds()
+        {
+            DataDictionary records = GetMyLatencyRecords();
+            if (records.Count <= 0) return 0f;
+
+            int localId = Utilities.IsValid(Networking.LocalPlayer) ? Networking.LocalPlayer.playerId : -1;
+            DataList keys = records.GetKeys();
+            int keyCount = keys.Count;
+
+            // 1. 3人以上での三角測量（全3辺で双方向計測が完了し時計ズレδが相殺された三角形を優先し、全候補の中央値で単一ペア異常値を排除）
+            if (keyCount >= 2)
+            {
+                int maxTriangles = (keyCount * (keyCount - 1)) / 2;
+                int[] biPerfTriangles = new int[maxTriangles];
+                int biPerfCount = 0;
+                int[] biAllTriangles = new int[maxTriangles];
+                int biAllCount = 0;
+                int[] fallbackPerfTriangles = new int[maxTriangles];
+                int fallbackPerfCount = 0;
+                int[] fallbackAllTriangles = new int[maxTriangles];
+                int fallbackAllCount = 0;
+
+                for (int x = keyCount - 1; x >= 0; x--)
+                {
+                    for (int y = x - 1; y >= 0; y--)
+                    {
+                        int playerX = keys[x].Int;
+                        int playerY = keys[y].Int;
+                        int delayXY = GetDelayWithTwoPlayers(playerX, playerY);
+                        if (delayXY < 0) continue;
+
+                        int delayX = records[playerX].Int;
+                        int delayY = records[playerY].Int;
+                        int candidateMs = Mathf.Max(0, (delayX + delayY - delayXY) / 2);
+                        bool involvesPerformer = _performerPlayerIds.Contains(playerX) || _performerPlayerIds.Contains(playerY);
+                        bool isFullyBidirectional = localId >= 0
+                            && HasBidirectionalPairDelay(localId, playerX)
+                            && HasBidirectionalPairDelay(localId, playerY)
+                            && HasBidirectionalPairDelay(playerX, playerY);
+
+                        if (isFullyBidirectional)
+                        {
+                            biAllTriangles[biAllCount++] = candidateMs;
+                            if (involvesPerformer)
+                            {
+                                biPerfTriangles[biPerfCount++] = candidateMs;
+                            }
+                        }
+
+                        fallbackAllTriangles[fallbackAllCount++] = candidateMs;
+                        if (involvesPerformer)
+                        {
+                            fallbackPerfTriangles[fallbackPerfCount++] = candidateMs;
+                        }
+                    }
+                }
+
+                float medianTriangleMs = -1f;
+                if (biAllCount > 0)
+                {
+                    medianTriangleMs = ComputeMedianFromBuffer(biAllTriangles, biAllCount);
+                }
+                else if (fallbackPerfCount > 0)
+                {
+                    medianTriangleMs = ComputeMedianFromBuffer(fallbackPerfTriangles, fallbackPerfCount);
+                }
+                else if (fallbackAllCount > 0)
+                {
+                    medianTriangleMs = ComputeMedianFromBuffer(fallbackAllTriangles, fallbackAllCount);
+                }
+
+                if (medianTriangleMs >= 0f)
+                {
+                    _hasMeasuredNetworkDelay = true;
+                    return medianTriangleMs / 1000f;
+                }
+            }
+
+            // 2. 2人インスタンス時（または三角ペア成立前）の双方向ペア遅延折半方式（中央値採用）
+            int[] biPerfPairs = new int[keyCount];
+            int biPerfPairCount = 0;
+            int[] biAllPairs = new int[keyCount];
+            int biAllPairCount = 0;
+            int[] fallbackPerfPairs = new int[keyCount];
+            int fallbackPerfPairCount = 0;
+            int[] fallbackAllPairs = new int[keyCount];
+            int fallbackAllPairCount = 0;
+
+            for (int i = keyCount - 1; i >= 0; i--)
+            {
+                int otherId = keys[i].Int;
+                int delayMs = records[otherId].Int;
+                bool isPerf = _performerPlayerIds.Contains(otherId);
+                bool isBi = localId >= 0 && HasBidirectionalPairDelay(localId, otherId);
+
+                if (isBi)
+                {
+                    biAllPairs[biAllPairCount++] = delayMs;
+                    if (isPerf)
+                    {
+                        biPerfPairs[biPerfPairCount++] = delayMs;
+                    }
+                }
+
+                fallbackAllPairs[fallbackAllPairCount++] = delayMs;
+                if (isPerf)
+                {
+                    fallbackPerfPairs[fallbackPerfPairCount++] = delayMs;
+                }
+            }
+
+            float medianPairMs = -1f;
+            if (biPerfPairCount > 0)
+            {
+                medianPairMs = ComputeMedianFromBuffer(biPerfPairs, biPerfPairCount);
+            }
+            else if (biAllPairCount > 0)
+            {
+                medianPairMs = ComputeMedianFromBuffer(biAllPairs, biAllPairCount);
+            }
+            else if (fallbackPerfPairCount > 0)
+            {
+                medianPairMs = ComputeMedianFromBuffer(fallbackPerfPairs, fallbackPerfPairCount);
+            }
+            else if (fallbackAllPairCount > 0)
+            {
+                medianPairMs = ComputeMedianFromBuffer(fallbackAllPairs, fallbackAllPairCount);
+            }
+
+            if (medianPairMs >= 0f)
+            {
+                _hasMeasuredNetworkDelay = true;
+                return (medianPairMs * 0.5f) / 1000f;
+            }
+
+            return 0f;
+        }
+
+        public void UpdateNetworkDelay()
+        {
+            // 上演中かつ既に自分のオフセットが確定している既存プレイヤーは、上演終了まで遅延再計算・オフセット更新を保留する
+            if (_isStagePlaying && !_isWaitingForReady && _isStageOffsetLocked)
+            {
+                _hasPendingLatencyUpdate = true;
+                return;
+            }
+
+            float prevDelay = _networkDelay;
+            _networkDelay = Mathf.Clamp(GetServerDelaySeconds(), 0f, 1f);
+            if (_isStagePlaying && !_isWaitingForReady)
+            {
+                // 上演中に途中参加したプレイヤー本人のみ、自身の初回遅延計測が完了した時点で一度だけオフセットを適用しロックする
+                if (_hasMeasuredNetworkDelay)
+                {
+                    _isStageOffsetLocked = true;
+                    if (Mathf.Abs(_networkDelay - prevDelay) > 0.001f)
+                    {
+                        ApplyOffset();
+                    }
+                }
+            }
+            else
+            {
+                if (Mathf.Abs(_networkDelay - prevDelay) > 0.001f)
+                {
+                    ApplyOffset();
+                }
+            }
+
+            if (_uiController != null)
+            {
+                _uiController.RefreshDelayStatusUI();
+            }
+        }
+
+        private void OnStagePlaybackEnded()
+        {
+            _isWaitingForCooldownLoad = false;
+            _pendingLoadSessionId = -1;
+            _isStageOffsetLocked = false;
+            if (_uiController != null)
+            {
+                _uiController.SetSettingsLocked(false);
+            }
+
+            // 上演中にトリガーから退出して演者状態がロックされていた場合、上演終了時点で実際のエリア在室状態(_isInsidePerformerArea)へ同期解除する
+            if (_isPerformer != _isInsidePerformerArea)
+            {
+                _isPerformer = _isInsidePerformerArea;
+                ApplyOffset();
+                ApplyPerformerObjects();
+                SyncLocalPerformerState();
+                if (_performerUIController != null)
+                {
+                    _performerUIController.OnPerformerRoleChanged(_isPerformer);
+                }
+            }
+
+            if (_hasPendingLatencyUpdate)
+            {
+                _hasPendingLatencyUpdate = false;
+                UpdateNetworkDelay();
+                ApplyOffset();
+                if (HasActivePerformer())
+                {
+                    TriggerBeaconLatencyPing();
+                }
+            }
+        }
+
+        #endregion
+
+        #region Independent Private Methods
+
+        private void InitializeBridges()
+        {
+            if (_yamaBridge == null) _yamaBridge = GetComponentInChildren<SSSYamaBridge>(true);
+            if (_yamaBridge != null)
+            {
+                _yamaBridge.SSSCore = this;
+                if (YamaPlayer_controller != null) _yamaBridge.Controller = YamaPlayer_controller;
+            }
+
+            if (_iwaSyncBridge == null) _iwaSyncBridge = GetComponentInChildren<SSSIwaSyncBridge>(true);
+            if (_iwaSyncBridge != null)
+            {
+                _iwaSyncBridge.SSSCore = this;
+                if (Iwasync_core != null) _iwaSyncBridge.IwasyncCore = Iwasync_core;
+            }
+
+            if (_uiController == null && transform.parent != null)
+            {
+                _uiController = transform.parent.GetComponentInChildren<SSSUIController>(true);
+            }
+            if (_uiController != null)
+            {
+                _uiController.SSSCore = this;
+            }
+
+            if (_performerUIController == null && transform.parent != null)
+            {
+                _performerUIController = transform.parent.GetComponentInChildren<SSSPerformerUIController>(true);
+            }
+            if (_performerUIController != null)
+            {
+                _performerUIController.SSSCore = this;
+                if (_uiController != null)
+                {
+                    _performerUIController.MainUIController = _uiController;
+                    _uiController.PerformerUIController = _performerUIController;
+                }
+            }
+        }
+
+        private void InitializeVolumeTemp()
+        {
+            float initialVol = GetVideoPlayerVolume();
+            if (initialVol > 0.0f)
+            {
+                _volumeTemp = initialVol;
+            }
+        }
+
+        private void TakeOwnership()
+        {
+            if (Utilities.IsValid(Networking.LocalPlayer) && !Networking.IsOwner(Networking.LocalPlayer, gameObject))
+            {
+                Networking.SetOwner(Networking.LocalPlayer, gameObject);
+            }
+        }
+
+        private void ApplyPerformerObjects()
+        {
+            if (_performerEnableObjects != null)
+            {
+                for (int i = 0; i < _performerEnableObjects.Length; i++)
+                {
+                    GameObject obj = _performerEnableObjects[i];
+                    if (obj == null || IsProtectedSystemObject(obj)) continue;
+                    if (obj.activeSelf != _isPerformer)
+                    {
+                        obj.SetActive(_isPerformer);
+                    }
+                }
+            }
+
+            if (_performerDisableObjects != null)
+            {
+                bool activeForCurrentRole = !_isPerformer;
+                for (int i = 0; i < _performerDisableObjects.Length; i++)
+                {
+                    GameObject obj = _performerDisableObjects[i];
+                    if (obj == null || IsProtectedSystemObject(obj)) continue;
+                    if (obj.activeSelf != activeForCurrentRole)
+                    {
+                        obj.SetActive(activeForCurrentRole);
+                    }
+                }
+            }
+        }
+
+        private bool IsProtectedSystemObject(GameObject obj)
+        {
+            if (obj == null) return true;
+            Transform t = obj.transform;
+
+            // 1. SSSCore自身・子階層（Bridge等）・親階層（Stage Sync Systemルート等）の保護
+            if (t == transform || transform.IsChildOf(t) || t.IsChildOf(transform)) return true;
+
+            // 2. SSSの主要コンポーネントおよび動画プレイヤーを含むオブジェクト（またはその親階層）の保護
+            if (obj.GetComponentInChildren<SSSCore>(true) != null) return true;
+            if (obj.GetComponentInChildren<DirectionController>(true) != null) return true;
+            if (obj.GetComponentInChildren<SSSUIController>(true) != null) return true;
+            if (obj.GetComponentInChildren<SSSPerformerUIController>(true) != null) return true;
+            if (obj.GetComponentInChildren<SSSPerformerTrigger>(true) != null) return true;
+            if (obj.GetComponentInChildren<SSSPerformerProximityChecker>(true) != null) return true;
+            if (obj.GetComponentInChildren<DirectionObject>(true) != null) return true;
+            if (obj.GetComponentInChildren<DirectionSwitch>(true) != null) return true;
+            if (obj.GetComponentInChildren<PerformerChecker>(true) != null) return true;
+            if (obj.GetComponentInChildren<UIOperatorChecker>(true) != null) return true;
+            if (obj.GetComponentInChildren<Controller>(true) != null) return true;
+            if (obj.GetComponentInChildren<VideoCore>(true) != null) return true;
+
+            // 3. 動画プレイヤー・演出オブジェクトの子階層の保護
+            if (YamaPlayer_controller != null && t.IsChildOf(YamaPlayer_controller.transform)) return true;
+            if (Iwasync_core != null && t.IsChildOf(Iwasync_core.transform)) return true;
+            if (_directions != null)
+            {
+                for (int i = 0; i < _directions.Length; i++)
+                {
+                    if (_directions[i] != null && t.IsChildOf(_directions[i].transform)) return true;
+                }
+            }
+
+            // 4. Stage Sync System の UI 階層および演者端末階層の保護
+            if (transform.parent != null)
+            {
+                Transform uiRoot = transform.parent.Find("UI");
+                if (uiRoot != null && (t == uiRoot || uiRoot.IsChildOf(t) || t.IsChildOf(uiRoot))) return true;
+
+                Transform perfUiRoot = transform.parent.Find("Performer Portable UI");
+                if (perfUiRoot != null && (t == perfUiRoot || perfUiRoot.IsChildOf(t) || t.IsChildOf(perfUiRoot))) return true;
+            }
+            if (_performerUIController != null)
+            {
+                Transform perfTransform = _performerUIController.transform;
+                if (t == perfTransform || perfTransform.IsChildOf(t) || t.IsChildOf(perfTransform)) return true;
+            }
+
+            return false;
+        }
+
+        private bool ShouldPlayDirection(DirectionObject dirObj)
+        {
+            if (dirObj == null) return false;
+            if (_isPerformer && !dirObj.playForPerformer) return false;
+            return true;
+        }
+
+        private void SyncActiveDirection(bool play)
+        {
+            if (_directions == null) return;
+
+            bool anyActivated = false;
+            for (int i = 0; i < _directions.Length; i++)
+            {
+                if (_directions[i] == null) continue;
+                bool shouldBeActive = play && (i == _playingObjectIndex) && ShouldPlayDirection(_directions[i]);
+                if (shouldBeActive)
+                {
+                    DirectionSetting(_directions[i], true);
+                    _activeDirectionIndex = i;
+                    anyActivated = true;
+                }
+                else if (_directions[i].gameObject.activeSelf)
+                {
+                    DirectionSetting(_directions[i], false);
+                }
+            }
+
+            if (!anyActivated)
+            {
+                _activeDirectionIndex = -1;
+            }
+        }
+
+        private void StopAllDirections()
+        {
+            if (_directions == null) return;
+            for (int i = 0; i < _directions.Length; i++)
+            {
+                if (_directions[i] != null)
+                {
+                    DirectionSetting(_directions[i], false);
+                }
+            }
+            _activeDirectionIndex = -1;
+        }
+
+        private void DirectionSetting(DirectionObject dirObj, bool toggle)
+        {
+            if (dirObj == null) return;
+
+            if (toggle)
+            {
+                if (!dirObj.gameObject.activeSelf)
+                {
+                    dirObj.gameObject.SetActive(true);
+                }
+                dirObj.playableDirector.time = GetCurrentVideoTime();
+                dirObj.playableDirector.Play();
+            }
+            else
+            {
+                dirObj.playableDirector.Stop();
+                dirObj.playableDirector.time = 0.0f;
+                if (dirObj.gameObject.activeSelf)
+                {
+                    dirObj.gameObject.SetActive(false);
+                }
+            }
+        }
+
+        #endregion
+
+        #region Video Player Dependent Methods
+
+        private bool IsUsingYamaPlayer()
+        {
+            if (_videoPlayerType == VideoPlayerType.YamaPlayer && YamaPlayer_controller != null) return true;
+            if (Iwasync_core == null && YamaPlayer_controller != null) return true;
+            return false;
+        }
+
+        private bool IsUsingIwaSync()
+        {
+            if (_videoPlayerType == VideoPlayerType.IwaSync && Iwasync_core != null) return true;
+            if (YamaPlayer_controller == null && Iwasync_core != null) return true;
+            return false;
+        }
+
+        private bool IsCurrentDirectionTrackLoaded()
+        {
+            if (_directions == null || _playingObjectIndex < 0 || _playingObjectIndex >= _directions.Length) return false;
+            DirectionObject dir = _directions[_playingObjectIndex];
+            if (dir == null || dir.videoURL == null) return false;
+
+            string targetUrl = dir.videoURL.Get();
+            if (string.IsNullOrEmpty(targetUrl)) return false;
+
+            if (IsUsingYamaPlayer())
+            {
+                return YamaPlayer_controller.Track.GetUrl() == targetUrl;
+            }
+            if (IsUsingIwaSync())
+            {
+                return Iwasync_core.url != null && Iwasync_core.url.Get() == targetUrl;
+            }
+            return true;
+        }
+
+        private void LoadVideoOnPlayer(int objectIndex)
+        {
+            DirectionObject dir = _directions[objectIndex];
+            if (dir == null) return;
+
+            if (IsUsingYamaPlayer())
+            {
+                if (!Networking.IsOwner(YamaPlayer_controller.gameObject))
+                {
+                    Networking.SetOwner(Networking.LocalPlayer, YamaPlayer_controller.gameObject);
+                }
+
+                // 既存トラック停止後に OnVideoPause で _paused = true を保持した状態で PlayTrack を1回のみシリアライズ実行する
+                StopLocalVideoPlayer();
+                YamaPlayer_controller.OnVideoPause();
+                Track track = Track.New(
+                    YamaPlayer_controller.VideoPlayerType,
+                    dir.directionName,
+                    dir.videoURL
+                );
+                YamaPlayer_controller.PlayTrack(track);
+            }
+            else if (IsUsingIwaSync())
+            {
+                Iwasync_core.TakeOwnership();
+                _isInternalVideoStop = true;
+                Iwasync_core.Stop();
+                _isInternalVideoStop = false;
+                Iwasync_core.PlayURL(_MODE_VIDEO, dir.videoURL);
+                Iwasync_core.Pause();
+                Iwasync_core.RequestSerialization();
+            }
+        }
+
+        private bool IsVideoPlayerPlaying()
+        {
+            if (IsUsingYamaPlayer()) return YamaPlayer_controller.IsPlaying;
+            if (IsUsingIwaSync()) return Iwasync_core.isPlaying;
+            return false;
+        }
+
+        private bool IsVideoPlayerPaused()
+        {
+            if (IsUsingYamaPlayer()) return YamaPlayer_controller.Paused;
+            if (IsUsingIwaSync()) return Iwasync_core.paused;
+            return false;
+        }
+
+        private void PauseLocalVideoPlayerAtZero()
+        {
+            if (IsUsingYamaPlayer())
+            {
+                if (YamaPlayer_controller.VideoPlayerHandle != null)
+                {
+                    YamaPlayer_controller.VideoPlayerHandle.Pause();
+                    YamaPlayer_controller.VideoPlayerHandle.VideoTime = 0f;
+                }
+            }
+            else if (IsUsingIwaSync())
+            {
+                Iwasync_core.Pause();
+                Iwasync_core.time = 0f;
+            }
+        }
+
+        private void ResumeLocalVideoPlayer()
+        {
+            if (IsUsingYamaPlayer())
+            {
+                if (YamaPlayer_controller.VideoPlayerHandle != null)
+                {
+                    YamaPlayer_controller.VideoPlayerHandle.Play();
+                }
+                // エラー発生後のリトライ待ち中（Stopped == true）や既にIsPlaying判定の場合でも内部の _paused を確実に解除しておく
+                // （後からリトライで読み込めた際に Controller.OnVideoStart で再び Pause されるのを防止する）
+                if (YamaPlayer_controller.Paused)
+                {
+                    YamaPlayer_controller.OnVideoPlay();
+                }
+            }
+            else if (IsUsingIwaSync())
+            {
+                Iwasync_core.Play();
+            }
+        }
+
+        private float ClampStageVideoTime(float targetTime)
+        {
+            if (IsUsingYamaPlayer())
+            {
+                float duration = YamaPlayer_controller.Duration;
+                if (duration > 0f && !float.IsInfinity(duration))
+                {
+                    if (YamaPlayer_controller.Loop)
+                    {
+                        targetTime = targetTime % duration;
+                    }
+                    else
+                    {
+                        targetTime = Mathf.Clamp(targetTime, 0f, duration);
+                    }
+                }
+            }
+            else if (IsUsingIwaSync())
+            {
+                float duration = Iwasync_core.duration;
+                if (duration > 0f && !float.IsInfinity(duration))
+                {
+                    targetTime = Mathf.Clamp(targetTime, 0f, duration);
+                }
+            }
+
+            return targetTime;
+        }
+
+        private float GetTargetStageVideoTime()
+        {
+            if (!_isStagePlaying || _stageStartServerTime == 0) return GetCurrentVideoTime();
+
+            float elapsedSeconds = (Networking.GetServerTimeInMilliseconds() - _stageStartServerTime) / 1000f;
+            float targetTime = Mathf.Max(0f, elapsedSeconds + GetOffsetSeconds());
+
+            return ClampStageVideoTime(targetTime);
+        }
+
+        private void SeekLocalVideoToCurrentStageTime()
+        {
+            if (!_isStagePlaying) return;
+
+            if (_stageStartServerTime == 0)
+            {
+                if (IsUsingYamaPlayer())
+                {
+                    YamaPlayer_controller.ForceSync();
+                }
+                return;
+            }
+
+            float targetTime = GetTargetStageVideoTime();
+
+            if (IsUsingYamaPlayer())
+            {
+                if (YamaPlayer_controller.VideoPlayerHandle != null && !YamaPlayer_controller.IsLive && YamaPlayer_controller.IsPlaying)
+                {
+                    // 同一フレームでの VideoTime 代入と ForceSync() の二重シークによる AVPro デコーダ競合を防ぐため、
+                    // _stageStartServerTime 基準の単一シークのみを高精度閾値(5ms)で実行し、AVProシーク時のデコード停止ラグ(約34ms)を先読み補正する
+                    if (Mathf.Abs(YamaPlayer_controller.VideoTime - targetTime) >= _VIDEO_SEEK_THRESHOLD)
+                    {
+                        float compensatedTarget = targetTime > 0.001f
+                            ? ClampStageVideoTime(targetTime + _AVPRO_SEEK_LAG_COMPENSATION)
+                            : targetTime;
+                        YamaPlayer_controller.VideoPlayerHandle.VideoTime = compensatedTarget;
+                    }
+                }
+            }
+            else if (IsUsingIwaSync())
+            {
+                if (Iwasync_core.isPlaying && Mathf.Abs(Iwasync_core.time - targetTime) >= _VIDEO_SEEK_THRESHOLD)
+                {
+                    float compensatedTarget = targetTime > 0.001f
+                        ? ClampStageVideoTime(targetTime + _AVPRO_SEEK_LAG_COMPENSATION)
+                        : targetTime;
+                    Iwasync_core.time = compensatedTarget;
+                }
+            }
+        }
+
+        private void SyncTimelineToTargetStageTime()
+        {
+            if (!_isStagePlaying || _playingObjectIndex < 0 || _playingObjectIndex >= _directions.Length) return;
+            DirectionObject currentDir = _directions[_playingObjectIndex];
+            if (currentDir == null || !currentDir.gameObject.activeSelf) return;
+
+            currentDir.playableDirector.time = GetTargetStageVideoTime();
+        }
+
+        private void SyncTimelineToVideoNow()
+        {
+            if (!_isStagePlaying || _playingObjectIndex < 0 || _playingObjectIndex >= _directions.Length) return;
+            DirectionObject currentDir = _directions[_playingObjectIndex];
+            if (currentDir == null || !currentDir.gameObject.activeSelf) return;
+
+            if (IsVideoPlayerPlaying() && !IsVideoPlayerPaused())
+            {
+                currentDir.playableDirector.time = GetCurrentVideoTime();
+            }
+        }
+
+        private void StopVideoOnPlayer()
+        {
+            _isInternalVideoStop = true;
+            if (IsUsingYamaPlayer())
+            {
+                if (!Networking.IsOwner(YamaPlayer_controller.gameObject))
+                {
+                    Networking.SetOwner(Networking.LocalPlayer, YamaPlayer_controller.gameObject);
+                }
+                YamaPlayer_controller.Stopped = true;
+                if (!string.IsNullOrEmpty(YamaPlayer_controller.Track.GetUrl()))
+                {
+                    YamaPlayer_controller.OnVideoStop();
+                }
+                YamaPlayer_controller.RequestSerialization();
+            }
+            else if (IsUsingIwaSync())
+            {
+                Iwasync_core.TakeOwnership();
+                Iwasync_core.Stop();
+                Iwasync_core.RequestSerialization();
+            }
+            _isInternalVideoStop = false;
+        }
+
+        private void StopLocalVideoPlayer()
+        {
+            _isInternalVideoStop = true;
+            if (IsUsingYamaPlayer())
+            {
+                if (YamaPlayer_controller.VideoPlayerHandle != null)
+                {
+                    YamaPlayer_controller.VideoPlayerHandle.Stop();
+                    // VideoPlayerHandle._stopped が既に true の場合でも、先行URL解決後にAVProが開き始めたストリームを確実に閉じる
+                    BaseVRCVideoPlayer basePlayer = YamaPlayer_controller.VideoPlayerHandle.GetComponent<BaseVRCVideoPlayer>();
+                    if (basePlayer != null)
+                    {
+                        basePlayer.Stop();
+                    }
+                    if (YamaPlayer_controller.VideoPlayerHandle.FallbackHandle != null)
+                    {
+                        BaseVRCVideoPlayer fallbackBase = YamaPlayer_controller.VideoPlayerHandle.FallbackHandle.GetComponent<BaseVRCVideoPlayer>();
+                        if (fallbackBase != null)
+                        {
+                            fallbackBase.Stop();
+                        }
+                    }
+                }
+                // エラー後や終了後など VideoPlayerHandle._stopped が既に true の場合でも
+                // YamaPlayer 内部の _retryTargetUrl と Track を確実にクリアして自動リトライ暴発や同一URL再再生無視を防ぐ
+                if (!string.IsNullOrEmpty(YamaPlayer_controller.Track.GetUrl()))
+                {
+                    YamaPlayer_controller.OnVideoStop();
+                }
+            }
+            else if (IsUsingIwaSync())
+            {
+                Iwasync_core.Stop();
+            }
+            _isInternalVideoStop = false;
+        }
+
+        private float GetVideoPlayerVolume()
+        {
+            if (IsUsingYamaPlayer()) return YamaPlayer_controller.Volume;
+            if (IsUsingIwaSync()) return Iwasync_core.volume;
+            return 0f;
+        }
+
+        private void SetVideoPlayerVolume(float vol)
+        {
+            if (IsUsingYamaPlayer())
+            {
+                YamaPlayer_controller.Volume = vol;
+            }
+            else if (IsUsingIwaSync())
+            {
+                Iwasync_core.volume = vol;
+            }
+        }
+
+        private void MuteVideoPlayerForLoading()
+        {
+            if (!_isMutedBySSS)
+            {
+                float currentVol = GetVideoPlayerVolume();
+                if (currentVol > 0.0f)
+                {
+                    _volumeTemp = currentVol;
+                }
+                _isMutedBySSS = true;
+            }
+            SetVideoPlayerVolume(0.0f);
+        }
+
+        private void RestoreVideoPlayerVolume()
+        {
+            if (_isMutedBySSS)
+            {
+                _isMutedBySSS = false;
+                if (_volumeTemp > 0.0f)
+                {
+                    SetVideoPlayerVolume(_volumeTemp);
+                }
+            }
+        }
+
+        // Danceモード相当のオフセット計算 (秒単位)
+        // 演者が不在の場合: 全員 0秒 (遅延計測・オフセット補正を省略)
+        // Fallback 時 (Forced Fallback 有効、1人インスタンス、または未計測): 演者 +AudienceDelays / 観客 0秒
+        // Operational 時: 演者 +(BaseSystemDelay + NetworkDelay) / 観客 -NetworkDelay
+        private float GetOffsetSeconds()
+        {
+            if (!HasActivePerformer())
+            {
+                return 0f;
+            }
+            if (IsCurrentlyUsingFallbackDelay() || !_hasMeasuredNetworkDelay)
+            {
+                return _isPerformer ? (AudienceDelays / 1000f) : 0f;
+            }
+            if (_isPerformer)
+            {
+                return (BaseSystemDelay / 1000f) + _networkDelay;
+            }
+            return -_networkDelay;
+        }
+
+        // ミリ秒単位のオフセット計算
+        private int GetOffsetTime()
+        {
+            return Mathf.RoundToInt(GetOffsetSeconds() * 1000f);
+        }
+
+        private void ApplyOffset()
+        {
+            if (IsUsingYamaPlayer())
+            {
+                float targetDelay = GetOffsetSeconds();
+                if (Mathf.Abs(YamaPlayer_controller.LocalDelay - targetDelay) > 0.0005f)
+                {
+                    YamaPlayer_controller.LocalDelay = targetDelay;
+                }
+            }
+            else if (IsUsingIwaSync())
+            {
+                int targetOffset = GetOffsetTime();
+                if (Iwasync_core.offsetTime != targetOffset)
+                {
+                    Iwasync_core.offsetTime = targetOffset;
+                }
+            }
+        }
+
+        private float GetCurrentVideoTime()
+        {
+            if (IsUsingYamaPlayer() && YamaPlayer_controller.IsPlaying)
+            {
+                return YamaPlayer_controller.VideoTime;
+            }
+            if (IsUsingIwaSync() && Iwasync_core.isPlaying)
+            {
+                return Iwasync_core.time;
+            }
+            return 0f;
+        }
+
+        #endregion
+    }
+}
