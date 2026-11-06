@@ -46,10 +46,31 @@ namespace AppleteaSystems.StageSyncSystem
         const string _bridgeObjectName = "Bridge";
         const string _uiObjectName = "UI";
         const string _performerRootObjectName = "Performer Portable UI";
+        const string _logoTextureGuid = "8542a6d9111f0564fbefc0f19b061cf5";
+        const string _logoFallbackPath = "Assets/Appletea's Item/Stage Sync System/v2.0/Texture/Stage Sync System Logo v1.5.png";
 
         bool isFoldout = true;
         int _pendingMoveFrom = -1;
         int _pendingMoveTo = -1;
+
+        internal static Texture2D LoadLogoTexture()
+        {
+            string path = AssetDatabase.GUIDToAssetPath(_logoTextureGuid);
+            if (string.IsNullOrEmpty(path))
+            {
+                path = _logoFallbackPath;
+            }
+            Texture2D tex = AssetDatabase.LoadAssetAtPath<Texture2D>(path);
+            if (tex == null)
+            {
+                string[] guids = AssetDatabase.FindAssets("Stage Sync System Logo t:Texture2D");
+                if (guids != null && guids.Length > 0)
+                {
+                    tex = AssetDatabase.LoadAssetAtPath<Texture2D>(AssetDatabase.GUIDToAssetPath(guids[0]));
+                }
+            }
+            return tex;
+        }
 
         private void OnEnable()
         {
@@ -59,7 +80,7 @@ namespace AppleteaSystems.StageSyncSystem
             if (_directionController == null) return;
 
             directionController = new SerializedObject(_directionController);
-            Thumbnail = AssetDatabase.LoadAssetAtPath<Texture2D>(AssetDatabase.GUIDToAssetPath("e53f95351d21c2041a16114955a6534b"));
+            Thumbnail = LoadLogoTexture();
 
             // Coreの取得
             _SSSCore = GetSSSCore(_directionController);
@@ -2183,8 +2204,15 @@ namespace AppleteaSystems.StageSyncSystem
 
         public override void OnInspectorGUI()
         {
-            // サムネイル
-            if (Thumbnail != null) ImageOnGUI(Thumbnail);
+            // サムネイル・ロゴ表示
+            if (Thumbnail == null)
+            {
+                Thumbnail = LoadLogoTexture();
+            }
+            if (Thumbnail != null)
+            {
+                ImageOnGUI(Thumbnail);
+            }
 
             base.OnInspectorGUI();
 
@@ -2436,13 +2464,19 @@ namespace AppleteaSystems.StageSyncSystem
 
         private void ImageOnGUI(Texture2D _image)
         {
-            int _margin = 40;
+            if (_image == null) return;
+            const int margin = 40;
 
-            float aspectRatio = (float)Thumbnail.height / Thumbnail.width;
-            float inspectorWidth = EditorGUIUtility.currentViewWidth - _margin;
+            float aspectRatio = (float)_image.height / _image.width;
+            float inspectorWidth = Mathf.Max(10f, EditorGUIUtility.currentViewWidth - margin);
             float imageHeight = inspectorWidth * aspectRatio;
 
-            GUILayout.Label(Thumbnail, GUILayout.Width(inspectorWidth), GUILayout.Height(imageHeight));
+            EditorGUILayout.BeginHorizontal();
+            GUILayout.FlexibleSpace();
+            GUILayout.Label(_image, GUILayout.Width(inspectorWidth), GUILayout.Height(imageHeight));
+            GUILayout.FlexibleSpace();
+            EditorGUILayout.EndHorizontal();
+            EditorGUILayout.Space(4f);
         }
     }
 
