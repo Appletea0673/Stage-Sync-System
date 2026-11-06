@@ -50,6 +50,7 @@ namespace AppleteaSystems.StageSyncSystem
         const string _logoFallbackPath = "Assets/Appletea's Item/Stage Sync System/v2.0/Texture/Stage Sync System Logo v1.5.png";
 
         bool isFoldout = true;
+        bool isManualParamsFoldout = true;
         int _pendingMoveFrom = -1;
         int _pendingMoveTo = -1;
 
@@ -2284,6 +2285,90 @@ namespace AppleteaSystems.StageSyncSystem
                 SanitizePerformerObjectArray(disableObjsProp, _SSSCore, _directionController);
             }
             EditorGUI.indentLevel--;
+            EditorGUILayout.EndVertical();
+
+            EditorGUILayout.Space();
+
+            // システムパラメータ設定 (Manual Parameters)
+            EditorGUILayout.BeginVertical(GUI.skin.box);
+            string manualParamsLabel = isJapanese
+                ? "パラメータ設定 (Manual Parameters)"
+                : "Manual Parameters";
+            isManualParamsFoldout = EditorGUILayout.Foldout(isManualParamsFoldout, manualParamsLabel, true);
+            if (isManualParamsFoldout)
+            {
+                EditorGUI.indentLevel++;
+
+                SerializedProperty baseDelayProp = SSS_Core.FindProperty("BaseSystemDelay");
+                if (baseDelayProp != null)
+                {
+                    string label = isJapanese ? "基本システム遅延 (ms)" : "Base System Delay (ms)";
+                    string tip = isJapanese
+                        ? "動的遅延計算時に加算されるVRChatアバターIK補間およびパイプライン基本遅延 (ミリ秒)"
+                        : "Milliseconds (VRChat avatar IK interpolation & pipeline base delay added to dynamic latency calculation)";
+                    EditorGUILayout.PropertyField(baseDelayProp, new GUIContent(label, tip));
+                    if (baseDelayProp.intValue < 0) baseDelayProp.intValue = 0;
+                }
+
+                SerializedProperty audienceDelayProp = SSS_Core.FindProperty("AudienceDelays");
+                if (audienceDelayProp != null)
+                {
+                    string label = isJapanese ? "フォールバック遅延 (ms)" : "Fallback Audience Delay (ms)";
+                    string tip = isJapanese
+                        ? "動的遅延計算が利用不可またはFallback使用時の観客・演者間遅延 (ミリ秒)"
+                        : "Milliseconds (Fallback delay when dynamic latency calculation is unavailable or forced to fallback)";
+                    EditorGUILayout.PropertyField(audienceDelayProp, new GUIContent(label, tip));
+                    if (audienceDelayProp.intValue < 0) audienceDelayProp.intValue = 0;
+                }
+
+                SerializedProperty syncAccuracyProp = SSS_Core.FindProperty("SyncAccuracy");
+                if (syncAccuracyProp != null)
+                {
+                    string label = isJapanese ? "同期許容誤差 (秒)" : "Sync Drift Threshold (s)";
+                    string tip = isJapanese
+                        ? "動画プレイヤーと演出タイムラインのズレ許容閾値 (秒)"
+                        : "Timeline sync drift threshold in seconds";
+                    EditorGUILayout.PropertyField(syncAccuracyProp, new GUIContent(label, tip));
+                    if (syncAccuracyProp.floatValue < 0.001f) syncAccuracyProp.floatValue = 0.001f;
+                }
+
+                SerializedProperty readyTimeoutProp = SSS_Core.FindProperty("ReadyTimeout");
+                if (readyTimeoutProp != null)
+                {
+                    string label = isJapanese ? "ロード待機タイムアウト (秒)" : "Ready Timeout (s)";
+                    string tip = isJapanese
+                        ? "全員の動画読み込み完了を待機する最大秒数 (秒)"
+                        : "Maximum seconds to wait for all players to finish loading the video";
+                    EditorGUILayout.PropertyField(readyTimeoutProp, new GUIContent(label, tip));
+                    if (readyTimeoutProp.floatValue < 1.0f) readyTimeoutProp.floatValue = 1.0f;
+                }
+
+                SerializedProperty errorThresholdProp = SSS_Core.FindProperty("ErrorAbortThreshold");
+                if (errorThresholdProp != null)
+                {
+                    string label = isJapanese ? "上演中断エラー率閾値 (%)" : "Error Abort Threshold (%)";
+                    string tip = isJapanese
+                        ? "動画読み込み失敗により上演を中断するプレイヤーの割合閾値 (0-100%)"
+                        : "Percentage of players failing to load required to abort stage playback (0-100%)";
+                    EditorGUILayout.PropertyField(errorThresholdProp, new GUIContent(label, tip));
+                    errorThresholdProp.floatValue = Mathf.Clamp(errorThresholdProp.floatValue, 0f, 100f);
+                }
+
+                EditorGUILayout.Space(2f);
+                EditorGUILayout.BeginHorizontal();
+                GUILayout.FlexibleSpace();
+                if (GUILayout.Button(isJapanese ? "デフォルトに戻す" : "Reset to Defaults", GUILayout.Width(140f)))
+                {
+                    if (baseDelayProp != null) baseDelayProp.intValue = 260;
+                    if (audienceDelayProp != null) audienceDelayProp.intValue = 370;
+                    if (syncAccuracyProp != null) syncAccuracyProp.floatValue = 0.04f;
+                    if (readyTimeoutProp != null) readyTimeoutProp.floatValue = 15.0f;
+                    if (errorThresholdProp != null) errorThresholdProp.floatValue = 50.0f;
+                }
+                EditorGUILayout.EndHorizontal();
+
+                EditorGUI.indentLevel--;
+            }
             EditorGUILayout.EndVertical();
 
             EditorGUILayout.Space();
