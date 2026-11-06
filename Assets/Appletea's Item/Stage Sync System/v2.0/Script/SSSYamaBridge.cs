@@ -2,16 +2,27 @@ using UdonSharp;
 using UnityEngine;
 using VRC.SDK3.Components.Video;
 using VRC.SDKBase;
+#if SSS_YAMAPLAYER
 using Yamadev.YamaStream;
+#endif
 
 namespace AppleteaSystems.StageSyncSystem
 {
+    // YamaPlayer (net.kwxxw.yama-stream) が導入されている場合のみ SSS_YAMAPLAYER が定義され、Listener として動作する。
+    // 未導入環境ではクラス自体は残し（Prefab/Scene上の参照を壊さないため）、何もしない空のブリッジとしてコンパイルされる。
     [UdonBehaviourSyncMode(BehaviourSyncMode.None)]
+#if SSS_YAMAPLAYER
     public class SSSYamaBridge : Listener
+#else
+    public class SSSYamaBridge : UdonSharpBehaviour
+#endif
     {
+#if SSS_YAMAPLAYER
         [SerializeField] private Controller _controller;
+#endif
         [SerializeField] private SSSCore _sssCore;
 
+#if SSS_YAMAPLAYER
         public Controller Controller
         {
             get => _controller;
@@ -21,6 +32,7 @@ namespace AppleteaSystems.StageSyncSystem
                 RegisterListener();
             }
         }
+#endif
 
         public SSSCore SSSCore
         {
@@ -35,12 +47,15 @@ namespace AppleteaSystems.StageSyncSystem
 
         public void RegisterListener()
         {
+#if SSS_YAMAPLAYER
             if (_controller != null)
             {
                 _controller.AddListener(this);
             }
+#endif
         }
 
+#if SSS_YAMAPLAYER
         public override void OnVideoReady()
         {
             if (_sssCore != null) _sssCore.OnVideoReady();
@@ -85,6 +100,6 @@ namespace AppleteaSystems.StageSyncSystem
         {
             if (_sssCore != null) _sssCore.OnVideoSetTime(time);
         }
+#endif
     }
 }
-

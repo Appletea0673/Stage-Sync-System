@@ -7,8 +7,12 @@ using VRC.SDK3.Components.Video;
 using VRC.SDK3.Video.Components.Base;
 using VRC.SDK3.UdonNetworkCalling;
 using VRC.Udon.Common.Interfaces;
+#if SSS_YAMAPLAYER
 using Yamadev.YamaStream;
+#endif
+#if SSS_IWASYNC
 using HoshinoLabs.IwaSync3.Udon;
+#endif
 using UdonSharp;
 
 namespace AppleteaSystems.StageSyncSystem
@@ -23,13 +27,17 @@ namespace AppleteaSystems.StageSyncSystem
     public class SSSCore : UdonSharpBehaviour
     {
         [Header("Video Player Core")]
+#if SSS_YAMAPLAYER
         [SerializeField]
         [Tooltip("YamaPlayer")]
         Controller YamaPlayer_controller;
+#endif
 
+#if SSS_IWASYNC
         [SerializeField]
         [Tooltip("IwaSync3")]
         VideoCore Iwasync_core;
+#endif
 
         [SerializeField, HideInInspector]
         SSSYamaBridge _yamaBridge;
@@ -149,17 +157,21 @@ namespace AppleteaSystems.StageSyncSystem
             set => _directions = value;
         }
 
+#if SSS_YAMAPLAYER
         public Controller YamaPlayerController
         {
             get => YamaPlayer_controller;
             set => YamaPlayer_controller = value;
         }
+#endif
 
+#if SSS_IWASYNC
         public VideoCore IwasyncCore
         {
             get => Iwasync_core;
             set => Iwasync_core = value;
         }
+#endif
 
         public SSSYamaBridge YamaBridge
         {
@@ -326,8 +338,12 @@ namespace AppleteaSystems.StageSyncSystem
         {
             get
             {
+#if SSS_YAMAPLAYER
                 if (IsUsingYamaPlayer()) return YamaPlayer_controller.Duration;
+#endif
+#if SSS_IWASYNC
                 if (IsUsingIwaSync()) return Iwasync_core.duration;
+#endif
                 return 0f;
             }
         }
@@ -336,7 +352,9 @@ namespace AppleteaSystems.StageSyncSystem
         {
             get
             {
+#if SSS_YAMAPLAYER
                 if (IsUsingYamaPlayer()) return YamaPlayer_controller.Loop;
+#endif
                 return false;
             }
         }
@@ -415,14 +433,18 @@ namespace AppleteaSystems.StageSyncSystem
                     // 上演中に動画プレイヤー側の RequestSerialization を呼ぶと既存全員に強制シーク(DoSync)が走るため非再生時のみ実行
                     if (!_isStagePlaying)
                     {
+#if SSS_IWASYNC
                         if (IsUsingIwaSync() && Iwasync_core.isOwner)
                         {
                             Iwasync_core.RequestSerialization();
                         }
-                        else if (IsUsingYamaPlayer() && Networking.IsOwner(YamaPlayer_controller.gameObject))
+#endif
+#if SSS_YAMAPLAYER
+                        if (IsUsingYamaPlayer() && Networking.IsOwner(YamaPlayer_controller.gameObject))
                         {
                             YamaPlayer_controller.RequestSerialization();
                         }
+#endif
                     }
                 }
 
@@ -717,10 +739,12 @@ namespace AppleteaSystems.StageSyncSystem
             }
 
             // 上演中に非Owner等のリトライやトラック再同期で一時的にStopが呼ばれた場合、動画プレイヤーが停止状態でなければ維持
+#if SSS_YAMAPLAYER
             if (_isStagePlaying && IsUsingYamaPlayer() && !YamaPlayer_controller.Stopped)
             {
                 return;
             }
+#endif
 
             float currentVol = GetVideoPlayerVolume();
             if (currentVol > 0.0f && !_isMutedBySSS)
@@ -979,6 +1003,7 @@ namespace AppleteaSystems.StageSyncSystem
             }
             else
             {
+#if SSS_YAMAPLAYER
                 if (IsUsingYamaPlayer())
                 {
                     bool recentlyLoadedSameTrack = IsCurrentDirectionTrackLoaded() && (Time.time - YamaPlayer_controller.LastLoaded <= 1.5f);
@@ -999,7 +1024,9 @@ namespace AppleteaSystems.StageSyncSystem
                         ReportLocalPlayerReady();
                     }
                 }
-                else if (IsUsingIwaSync())
+#endif
+#if SSS_IWASYNC
+                if (IsUsingIwaSync())
                 {
                     if (IsCurrentDirectionTrackLoaded() && IsVideoPlayerPlaying())
                     {
@@ -1008,6 +1035,7 @@ namespace AppleteaSystems.StageSyncSystem
                         ReportLocalPlayerReady();
                     }
                 }
+#endif
             }
         }
 
@@ -1292,6 +1320,7 @@ namespace AppleteaSystems.StageSyncSystem
             _stageStartedInFallback = _useFallbackDelay || (VRCPlayerApi.GetPlayerCount() < 2) || (HasActivePerformer() && !_hasMeasuredNetworkDelay);
             RequestSerialization();
 
+#if SSS_YAMAPLAYER
             if (IsUsingYamaPlayer())
             {
                 // Owner自身が読み込み失敗している状態で RequestSerialization を呼ぶと _stopped = true が全員へ送信され、
@@ -1313,7 +1342,9 @@ namespace AppleteaSystems.StageSyncSystem
                     YamaPlayer_controller.OnVideoPlay();
                 }
             }
-            else if (IsUsingIwaSync())
+#endif
+#if SSS_IWASYNC
+            if (IsUsingIwaSync())
             {
                 Iwasync_core.TakeOwnership();
                 Iwasync_core.clockTime = _stageStartServerTime;
@@ -1321,6 +1352,7 @@ namespace AppleteaSystems.StageSyncSystem
                 Iwasync_core.Play();
                 Iwasync_core.RequestSerialization();
             }
+#endif
 
             if (_uiController != null)
             {
@@ -1969,14 +2001,18 @@ namespace AppleteaSystems.StageSyncSystem
             if (_yamaBridge != null)
             {
                 _yamaBridge.SSSCore = this;
+#if SSS_YAMAPLAYER
                 if (YamaPlayer_controller != null) _yamaBridge.Controller = YamaPlayer_controller;
+#endif
             }
 
             if (_iwaSyncBridge == null) _iwaSyncBridge = GetComponentInChildren<SSSIwaSyncBridge>(true);
             if (_iwaSyncBridge != null)
             {
                 _iwaSyncBridge.SSSCore = this;
+#if SSS_IWASYNC
                 if (Iwasync_core != null) _iwaSyncBridge.IwasyncCore = Iwasync_core;
+#endif
             }
 
             if (_uiController == null && transform.parent != null)
@@ -2069,12 +2105,20 @@ namespace AppleteaSystems.StageSyncSystem
             if (obj.GetComponentInChildren<DirectionSwitch>(true) != null) return true;
             if (obj.GetComponentInChildren<PerformerChecker>(true) != null) return true;
             if (obj.GetComponentInChildren<UIOperatorChecker>(true) != null) return true;
+#if SSS_YAMAPLAYER
             if (obj.GetComponentInChildren<Controller>(true) != null) return true;
+#endif
+#if SSS_IWASYNC
             if (obj.GetComponentInChildren<VideoCore>(true) != null) return true;
+#endif
 
             // 3. 動画プレイヤー・演出オブジェクトの子階層の保護
+#if SSS_YAMAPLAYER
             if (YamaPlayer_controller != null && t.IsChildOf(YamaPlayer_controller.transform)) return true;
+#endif
+#if SSS_IWASYNC
             if (Iwasync_core != null && t.IsChildOf(Iwasync_core.transform)) return true;
+#endif
             if (_directions != null)
             {
                 for (int i = 0; i < _directions.Length; i++)
@@ -2176,17 +2220,38 @@ namespace AppleteaSystems.StageSyncSystem
 
         #region Video Player Dependent Methods
 
+        // 導入されている動画プレイヤーのみ判定する（SSS_YAMAPLAYER / SSS_IWASYNC は SSSVideoPlayerDefineManager が自動設定）
+        private bool HasYamaPlayerAssigned()
+        {
+#if SSS_YAMAPLAYER
+            return YamaPlayer_controller != null;
+#else
+            return false;
+#endif
+        }
+
+        private bool HasIwaSyncAssigned()
+        {
+#if SSS_IWASYNC
+            return Iwasync_core != null;
+#else
+            return false;
+#endif
+        }
+
         private bool IsUsingYamaPlayer()
         {
-            if (_videoPlayerType == VideoPlayerType.YamaPlayer && YamaPlayer_controller != null) return true;
-            if (Iwasync_core == null && YamaPlayer_controller != null) return true;
+            bool hasYama = HasYamaPlayerAssigned();
+            if (_videoPlayerType == VideoPlayerType.YamaPlayer && hasYama) return true;
+            if (!HasIwaSyncAssigned() && hasYama) return true;
             return false;
         }
 
         private bool IsUsingIwaSync()
         {
-            if (_videoPlayerType == VideoPlayerType.IwaSync && Iwasync_core != null) return true;
-            if (YamaPlayer_controller == null && Iwasync_core != null) return true;
+            bool hasIwa = HasIwaSyncAssigned();
+            if (_videoPlayerType == VideoPlayerType.IwaSync && hasIwa) return true;
+            if (!HasYamaPlayerAssigned() && hasIwa) return true;
             return false;
         }
 
@@ -2199,14 +2264,18 @@ namespace AppleteaSystems.StageSyncSystem
             string targetUrl = dir.videoURL.Get();
             if (string.IsNullOrEmpty(targetUrl)) return false;
 
+#if SSS_YAMAPLAYER
             if (IsUsingYamaPlayer())
             {
                 return YamaPlayer_controller.Track.GetUrl() == targetUrl;
             }
+#endif
+#if SSS_IWASYNC
             if (IsUsingIwaSync())
             {
                 return Iwasync_core.url != null && Iwasync_core.url.Get() == targetUrl;
             }
+#endif
             return true;
         }
 
@@ -2215,6 +2284,7 @@ namespace AppleteaSystems.StageSyncSystem
             DirectionObject dir = _directions[objectIndex];
             if (dir == null) return;
 
+#if SSS_YAMAPLAYER
             if (IsUsingYamaPlayer())
             {
                 if (!Networking.IsOwner(YamaPlayer_controller.gameObject))
@@ -2232,7 +2302,9 @@ namespace AppleteaSystems.StageSyncSystem
                 );
                 YamaPlayer_controller.PlayTrack(track);
             }
-            else if (IsUsingIwaSync())
+#endif
+#if SSS_IWASYNC
+            if (IsUsingIwaSync())
             {
                 Iwasync_core.TakeOwnership();
                 _isInternalVideoStop = true;
@@ -2242,24 +2314,34 @@ namespace AppleteaSystems.StageSyncSystem
                 Iwasync_core.Pause();
                 Iwasync_core.RequestSerialization();
             }
+#endif
         }
 
         private bool IsVideoPlayerPlaying()
         {
+#if SSS_YAMAPLAYER
             if (IsUsingYamaPlayer()) return YamaPlayer_controller.IsPlaying;
+#endif
+#if SSS_IWASYNC
             if (IsUsingIwaSync()) return Iwasync_core.isPlaying;
+#endif
             return false;
         }
 
         private bool IsVideoPlayerPaused()
         {
+#if SSS_YAMAPLAYER
             if (IsUsingYamaPlayer()) return YamaPlayer_controller.Paused;
+#endif
+#if SSS_IWASYNC
             if (IsUsingIwaSync()) return Iwasync_core.paused;
+#endif
             return false;
         }
 
         private void PauseLocalVideoPlayerAtZero()
         {
+#if SSS_YAMAPLAYER
             if (IsUsingYamaPlayer())
             {
                 if (YamaPlayer_controller.VideoPlayerHandle != null)
@@ -2268,15 +2350,19 @@ namespace AppleteaSystems.StageSyncSystem
                     YamaPlayer_controller.VideoPlayerHandle.VideoTime = 0f;
                 }
             }
-            else if (IsUsingIwaSync())
+#endif
+#if SSS_IWASYNC
+            if (IsUsingIwaSync())
             {
                 Iwasync_core.Pause();
                 Iwasync_core.time = 0f;
             }
+#endif
         }
 
         private void ResumeLocalVideoPlayer()
         {
+#if SSS_YAMAPLAYER
             if (IsUsingYamaPlayer())
             {
                 if (YamaPlayer_controller.VideoPlayerHandle != null)
@@ -2290,14 +2376,18 @@ namespace AppleteaSystems.StageSyncSystem
                     YamaPlayer_controller.OnVideoPlay();
                 }
             }
-            else if (IsUsingIwaSync())
+#endif
+#if SSS_IWASYNC
+            if (IsUsingIwaSync())
             {
                 Iwasync_core.Play();
             }
+#endif
         }
 
         private float ClampStageVideoTime(float targetTime)
         {
+#if SSS_YAMAPLAYER
             if (IsUsingYamaPlayer())
             {
                 float duration = YamaPlayer_controller.Duration;
@@ -2313,7 +2403,9 @@ namespace AppleteaSystems.StageSyncSystem
                     }
                 }
             }
-            else if (IsUsingIwaSync())
+#endif
+#if SSS_IWASYNC
+            if (IsUsingIwaSync())
             {
                 float duration = Iwasync_core.duration;
                 if (duration > 0f && !float.IsInfinity(duration))
@@ -2321,6 +2413,7 @@ namespace AppleteaSystems.StageSyncSystem
                     targetTime = Mathf.Clamp(targetTime, 0f, duration);
                 }
             }
+#endif
 
             return targetTime;
         }
@@ -2341,15 +2434,18 @@ namespace AppleteaSystems.StageSyncSystem
 
             if (_stageStartServerTime == 0)
             {
+#if SSS_YAMAPLAYER
                 if (IsUsingYamaPlayer())
                 {
                     YamaPlayer_controller.ForceSync();
                 }
+#endif
                 return;
             }
 
             float targetTime = GetTargetStageVideoTime();
 
+#if SSS_YAMAPLAYER
             if (IsUsingYamaPlayer())
             {
                 if (YamaPlayer_controller.VideoPlayerHandle != null && !YamaPlayer_controller.IsLive && YamaPlayer_controller.IsPlaying)
@@ -2365,7 +2461,9 @@ namespace AppleteaSystems.StageSyncSystem
                     }
                 }
             }
-            else if (IsUsingIwaSync())
+#endif
+#if SSS_IWASYNC
+            if (IsUsingIwaSync())
             {
                 if (Iwasync_core.isPlaying && Mathf.Abs(Iwasync_core.time - targetTime) >= _VIDEO_SEEK_THRESHOLD)
                 {
@@ -2375,6 +2473,7 @@ namespace AppleteaSystems.StageSyncSystem
                     Iwasync_core.time = compensatedTarget;
                 }
             }
+#endif
         }
 
         private void SyncTimelineToTargetStageTime()
@@ -2401,6 +2500,7 @@ namespace AppleteaSystems.StageSyncSystem
         private void StopVideoOnPlayer()
         {
             _isInternalVideoStop = true;
+#if SSS_YAMAPLAYER
             if (IsUsingYamaPlayer())
             {
                 if (!Networking.IsOwner(YamaPlayer_controller.gameObject))
@@ -2414,18 +2514,22 @@ namespace AppleteaSystems.StageSyncSystem
                 }
                 YamaPlayer_controller.RequestSerialization();
             }
-            else if (IsUsingIwaSync())
+#endif
+#if SSS_IWASYNC
+            if (IsUsingIwaSync())
             {
                 Iwasync_core.TakeOwnership();
                 Iwasync_core.Stop();
                 Iwasync_core.RequestSerialization();
             }
+#endif
             _isInternalVideoStop = false;
         }
 
         private void StopLocalVideoPlayer()
         {
             _isInternalVideoStop = true;
+#if SSS_YAMAPLAYER
             if (IsUsingYamaPlayer())
             {
                 if (YamaPlayer_controller.VideoPlayerHandle != null)
@@ -2453,30 +2557,41 @@ namespace AppleteaSystems.StageSyncSystem
                     YamaPlayer_controller.OnVideoStop();
                 }
             }
-            else if (IsUsingIwaSync())
+#endif
+#if SSS_IWASYNC
+            if (IsUsingIwaSync())
             {
                 Iwasync_core.Stop();
             }
+#endif
             _isInternalVideoStop = false;
         }
 
         private float GetVideoPlayerVolume()
         {
+#if SSS_YAMAPLAYER
             if (IsUsingYamaPlayer()) return YamaPlayer_controller.Volume;
+#endif
+#if SSS_IWASYNC
             if (IsUsingIwaSync()) return Iwasync_core.volume;
+#endif
             return 0f;
         }
 
         private void SetVideoPlayerVolume(float vol)
         {
+#if SSS_YAMAPLAYER
             if (IsUsingYamaPlayer())
             {
                 YamaPlayer_controller.Volume = vol;
             }
-            else if (IsUsingIwaSync())
+#endif
+#if SSS_IWASYNC
+            if (IsUsingIwaSync())
             {
                 Iwasync_core.volume = vol;
             }
+#endif
         }
 
         private void MuteVideoPlayerForLoading()
@@ -2534,6 +2649,7 @@ namespace AppleteaSystems.StageSyncSystem
 
         private void ApplyOffset()
         {
+#if SSS_YAMAPLAYER
             if (IsUsingYamaPlayer())
             {
                 float targetDelay = GetOffsetSeconds();
@@ -2542,7 +2658,9 @@ namespace AppleteaSystems.StageSyncSystem
                     YamaPlayer_controller.LocalDelay = targetDelay;
                 }
             }
-            else if (IsUsingIwaSync())
+#endif
+#if SSS_IWASYNC
+            if (IsUsingIwaSync())
             {
                 int targetOffset = GetOffsetTime();
                 if (Iwasync_core.offsetTime != targetOffset)
@@ -2550,18 +2668,23 @@ namespace AppleteaSystems.StageSyncSystem
                     Iwasync_core.offsetTime = targetOffset;
                 }
             }
+#endif
         }
 
         private float GetCurrentVideoTime()
         {
+#if SSS_YAMAPLAYER
             if (IsUsingYamaPlayer() && YamaPlayer_controller.IsPlaying)
             {
                 return YamaPlayer_controller.VideoTime;
             }
+#endif
+#if SSS_IWASYNC
             if (IsUsingIwaSync() && Iwasync_core.isPlaying)
             {
                 return Iwasync_core.time;
             }
+#endif
             return 0f;
         }
 

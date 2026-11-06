@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+#if SSS_IWASYNC
 using HoshinoLabs.IwaSync3.Udon;
+#endif
 using UdonSharp;
 using UdonSharpEditor;
 using UnityEditor;
@@ -15,7 +17,9 @@ using UnityEngine.SceneManagement;
 using UnityEngine.UI;
 using VRC.SDK3.Components;
 using VRC.SDKBase;
+#if SSS_YAMAPLAYER
 using Yamadev.YamaStream;
+#endif
 
 namespace AppleteaSystems.StageSyncSystem
 {
@@ -35,8 +39,16 @@ namespace AppleteaSystems.StageSyncSystem
         SSSUIController _uiController;
         SSSPerformerUIController _performerUIController;
 
+#if SSS_YAMAPLAYER
         Controller _YamaPlayer_Controller = null;
+#else
+        Component _YamaPlayer_Controller = null;
+#endif
+#if SSS_IWASYNC
         VideoCore _Iwasync_Core = null;
+#else
+        Component _Iwasync_Core = null;
+#endif
         List<DirectionObject> _directionList = new List<DirectionObject>();
         ReorderableList _reorderableList;
 
@@ -184,17 +196,21 @@ namespace AppleteaSystems.StageSyncSystem
             };
         }
 
-        internal static Controller GetYamaPlayerController()
+        internal static Component GetYamaPlayerController()
         {
+#if SSS_YAMAPLAYER
             Controller[] controllers = FindObjectsByType<Controller>(FindObjectsInactive.Include, FindObjectsSortMode.None);
             if (controllers != null && controllers.Length > 0) return controllers[0];
+#endif
             return null;
         }
 
-        internal static VideoCore GetIwasyncCore()
+        internal static Component GetIwasyncCore()
         {
+#if SSS_IWASYNC
             VideoCore[] coreTemp = FindObjectsByType<VideoCore>(FindObjectsInactive.Include, FindObjectsSortMode.None);
             if (coreTemp != null && coreTemp.Length > 0) return coreTemp[0];
+#endif
             return null;
         }
 
@@ -447,7 +463,7 @@ namespace AppleteaSystems.StageSyncSystem
             }
         }
 
-        internal static void SetVideoPlayers(Controller yamaController, VideoCore iwasyncCore, SerializedObject sssCoreSO)
+        internal static void SetVideoPlayers(Component yamaController, Component iwasyncCore, SerializedObject sssCoreSO)
         {
             sssCoreSO.Update();
 
@@ -474,7 +490,7 @@ namespace AppleteaSystems.StageSyncSystem
             sssCoreSO.ApplyModifiedProperties();
         }
 
-        internal static void SetupBridges(SSSCore sssCore, Controller yamaController, VideoCore iwasyncCore, SerializedObject sssCoreSO)
+        internal static void SetupBridges(SSSCore sssCore, Component yamaController, Component iwasyncCore, SerializedObject sssCoreSO)
         {
             if (sssCore == null || EditorUtility.IsPersistent(sssCore.gameObject)) return;
 
@@ -492,6 +508,7 @@ namespace AppleteaSystems.StageSyncSystem
 
             // YamaPlayer Bridge
             SSSYamaBridge yamaBridge = sssCore.GetComponentInChildren<SSSYamaBridge>(true);
+#if SSS_YAMAPLAYER
             if (yamaBridge == null && UdonSharpEditorUtility.GetUdonSharpProgramAsset(typeof(SSSYamaBridge)) != null)
             {
                 yamaBridge = bridgeGO.AddUdonSharpComponent<SSSYamaBridge>();
@@ -502,13 +519,16 @@ namespace AppleteaSystems.StageSyncSystem
                 SerializedObject yamaBridgeSO = new SerializedObject(yamaBridge);
                 yamaBridgeSO.Update();
                 yamaBridgeSO.FindProperty("_sssCore").objectReferenceValue = sssCore;
-                yamaBridgeSO.FindProperty("_controller").objectReferenceValue = yamaController;
+                SerializedProperty ctrlProp = yamaBridgeSO.FindProperty("_controller");
+                if (ctrlProp != null) ctrlProp.objectReferenceValue = yamaController;
                 yamaBridgeSO.ApplyModifiedProperties();
                 UdonSharpEditorUtility.CopyProxyToUdon(yamaBridge);
             }
+#endif
 
             // IwaSync Bridge
             SSSIwaSyncBridge iwaBridge = sssCore.GetComponentInChildren<SSSIwaSyncBridge>(true);
+#if SSS_IWASYNC
             if (iwaBridge == null && UdonSharpEditorUtility.GetUdonSharpProgramAsset(typeof(SSSIwaSyncBridge)) != null)
             {
                 iwaBridge = bridgeGO.AddUdonSharpComponent<SSSIwaSyncBridge>();
@@ -519,10 +539,12 @@ namespace AppleteaSystems.StageSyncSystem
                 SerializedObject iwaBridgeSO = new SerializedObject(iwaBridge);
                 iwaBridgeSO.Update();
                 iwaBridgeSO.FindProperty("_sssCore").objectReferenceValue = sssCore;
-                iwaBridgeSO.FindProperty("_iwasyncCore").objectReferenceValue = iwasyncCore;
+                SerializedProperty coreProp = iwaBridgeSO.FindProperty("_iwasyncCore");
+                if (coreProp != null) coreProp.objectReferenceValue = iwasyncCore;
                 iwaBridgeSO.ApplyModifiedProperties();
                 UdonSharpEditorUtility.CopyProxyToUdon(iwaBridge);
             }
+#endif
 
             sssCoreSO.Update();
             SerializedProperty yamaBridgeProp = sssCoreSO.FindProperty("_yamaBridge");
@@ -2244,18 +2266,26 @@ namespace AppleteaSystems.StageSyncSystem
             EditorGUILayout.Space();
 
             // YamaPlayer 連携状況
+#if SSS_YAMAPLAYER
             DrawIntegrationStatusBox(
                 isJapanese ? "YamaPlayer連携状況" : "YamaPlayer Integration Status",
                 _YamaPlayer_Controller != null
             );
+#else
+            DrawNotInstalledStatusBox("YamaPlayer", isJapanese);
+#endif
 
             EditorGUILayout.Space();
 
             // iwaSync 連携状況
+#if SSS_IWASYNC
             DrawIntegrationStatusBox(
                 isJapanese ? "iwaSync連携状況" : "iwaSync Integration Status",
                 _Iwasync_Core != null
             );
+#else
+            DrawNotInstalledStatusBox("iwaSync", isJapanese);
+#endif
 
             EditorGUILayout.Space();
 
@@ -2513,8 +2543,12 @@ namespace AppleteaSystems.StageSyncSystem
             if (obj.GetComponentInChildren<DirectionSwitch>(true) != null || obj.GetComponentInParent<DirectionSwitch>(true) != null) return true;
             if (obj.GetComponentInChildren<PerformerChecker>(true) != null || obj.GetComponentInParent<PerformerChecker>(true) != null) return true;
             if (obj.GetComponentInChildren<UIOperatorChecker>(true) != null || obj.GetComponentInParent<UIOperatorChecker>(true) != null) return true;
+#if SSS_YAMAPLAYER
             if (obj.GetComponentInChildren<Controller>(true) != null || obj.GetComponentInParent<Controller>(true) != null) return true;
+#endif
+#if SSS_IWASYNC
             if (obj.GetComponentInChildren<VideoCore>(true) != null || obj.GetComponentInParent<VideoCore>(true) != null) return true;
+#endif
 
             return false;
         }
@@ -2539,6 +2573,33 @@ namespace AppleteaSystems.StageSyncSystem
                 alignment = TextAnchor.MiddleCenter
             };
             style.normal.textColor = Color.white;
+            GUILayout.Label(content, style, GUILayout.Height(20));
+            GUILayout.Label(icon, GUILayout.Width(20), GUILayout.Height(20));
+            GUILayout.FlexibleSpace();
+            GUILayout.EndHorizontal();
+
+            EditorGUILayout.EndVertical();
+        }
+
+        private void DrawNotInstalledStatusBox(string playerName, bool isJapanese)
+        {
+            EditorGUILayout.BeginVertical(GUI.skin.box);
+            string title = isJapanese ? $"{playerName}連携状況" : $"{playerName} Integration Status";
+            EditorGUILayout.LabelField(title, EditorStyles.boldLabel);
+
+            GUIContent content = new GUIContent(isJapanese ? "未導入 (Non-installed)" : "Not Installed");
+            Texture icon = EditorGUIUtility.IconContent("sv_icon_dot6_pix16_gizmo").image;
+
+            EditorGUILayout.Space();
+
+            GUILayout.BeginHorizontal();
+            GUILayout.FlexibleSpace();
+            GUIStyle style = new GUIStyle
+            {
+                fontSize = 18,
+                alignment = TextAnchor.MiddleCenter
+            };
+            style.normal.textColor = new Color(0.6f, 0.6f, 0.6f, 1f);
             GUILayout.Label(content, style, GUILayout.Height(20));
             GUILayout.Label(icon, GUILayout.Width(20), GUILayout.Height(20));
             GUILayout.FlexibleSpace();
@@ -2576,8 +2637,8 @@ namespace AppleteaSystems.StageSyncSystem
             SSSCore sssCore = StageSyncSystem_Editor.GetSSSCore();
             if (sssCore == null) return;
 
-            Controller yamaController = StageSyncSystem_Editor.GetYamaPlayerController();
-            VideoCore iwasyncCore = StageSyncSystem_Editor.GetIwasyncCore();
+            Component yamaController = StageSyncSystem_Editor.GetYamaPlayerController();
+            Component iwasyncCore = StageSyncSystem_Editor.GetIwasyncCore();
 
             SerializedObject sssCoreSO = new SerializedObject(sssCore);
             StageSyncSystem_Editor.SetVideoPlayers(yamaController, iwasyncCore, sssCoreSO);
@@ -2755,8 +2816,8 @@ namespace AppleteaSystems.StageSyncSystem
             SerializedObject dirControllerSO = new SerializedObject(dirController);
             SerializedObject sssCoreSO = new SerializedObject(sssCore);
 
-            Controller yamaController = StageSyncSystem_Editor.GetYamaPlayerController();
-            VideoCore iwasyncCore = StageSyncSystem_Editor.GetIwasyncCore();
+            Component yamaController = StageSyncSystem_Editor.GetYamaPlayerController();
+            Component iwasyncCore = StageSyncSystem_Editor.GetIwasyncCore();
 
             StageSyncSystem_Editor.SetVideoPlayers(yamaController, iwasyncCore, sssCoreSO);
             StageSyncSystem_Editor.SetupBridges(sssCore, yamaController, iwasyncCore, sssCoreSO);
