@@ -120,6 +120,10 @@ namespace AppleteaSystems.StageSyncSystem
         [Tooltip("GameObject名（降順）ソートのラジオボタンToggle（任意）")]
         Toggle _sortByGameObjectNameDescToggle;
 
+        [SerializeField]
+        [Tooltip("ランタイム手動並び替え（D&D・▲/▼）ドロワーコントローラ")]
+        SSSRuntimeManualSorter _runtimeManualSorter;
+
         [Header("Error Detection (Force Launch) UI")]
         [SerializeField]
         [Tooltip("全員読み込めていない（閾値未達）場合の上演停止を無効化するToggle")]
@@ -178,6 +182,9 @@ namespace AppleteaSystems.StageSyncSystem
         int _syncedSortMode = (int)DirectionSortMode.Hierarchy;
 
         [UdonSynced]
+        string _syncedManualOrderPacked = "";
+
+        [UdonSynced]
         bool _syncedIgnoreThreshold = false;
 
         [UdonSynced]
@@ -198,6 +205,7 @@ namespace AppleteaSystems.StageSyncSystem
         bool _canOperateUI = true;
         bool _isSettingsLocked = false;
         int _lockedSortMode = (int)DirectionSortMode.Hierarchy;
+        string _lockedManualOrderPacked = "";
         bool _lockedIgnoreThreshold = false;
         bool _lockedIgnorePerformerError = false;
         bool _lockedForceLaunchAlways = false;
@@ -205,6 +213,7 @@ namespace AppleteaSystems.StageSyncSystem
         Color _fallbackDefaultTextColor = new Color(0.3019608f, 0.3019608f, 0.3019608f, 1f);
         int[] _currentSortedIndices;
         int[] _manualOrderIndices;
+        int[] _manualOrderBuffer;
 
         #region Accessors
 
@@ -218,6 +227,12 @@ namespace AppleteaSystems.StageSyncSystem
         {
             get => _performerUIController;
             set => _performerUIController = value;
+        }
+
+        public SSSRuntimeManualSorter RuntimeManualSorter
+        {
+            get => _runtimeManualSorter;
+            set => _runtimeManualSorter = value;
         }
 
         public Button[] DirectionSWs
@@ -268,6 +283,15 @@ namespace AppleteaSystems.StageSyncSystem
                 _performerUIController.MainUIController = this;
             }
 
+            if (_runtimeManualSorter == null)
+            {
+                _runtimeManualSorter = GetComponentInChildren<SSSRuntimeManualSorter>(true);
+                if (_runtimeManualSorter == null && transform.parent != null)
+                {
+                    _runtimeManualSorter = transform.parent.GetComponentInChildren<SSSRuntimeManualSorter>(true);
+                }
+            }
+
             if (_loadedPlayerCountText != null)
             {
                 _fallbackDefaultTextColor = _loadedPlayerCountText.color;
@@ -313,7 +337,13 @@ namespace AppleteaSystems.StageSyncSystem
             {
                 _currentSortedIndices = new int[0];
                 _manualOrderIndices = new int[0];
+                _manualOrderBuffer = new int[0];
                 return;
+            }
+
+            if (_manualOrderBuffer == null || _manualOrderBuffer.Length != count)
+            {
+                _manualOrderBuffer = new int[count];
             }
 
             if (_manualOrderIndices == null || _manualOrderIndices.Length != count)
@@ -322,6 +352,17 @@ namespace AppleteaSystems.StageSyncSystem
                 for (int i = 0; i < count; i++)
                 {
                     _manualOrderIndices[i] = i;
+                }
+                if (!string.IsNullOrEmpty(_syncedManualOrderPacked) && TryUnpackOrderString(_syncedManualOrderPacked, _manualOrderBuffer))
+                {
+                    for (int i = 0; i < count; i++)
+                    {
+                        _manualOrderIndices[i] = _manualOrderBuffer[i];
+                    }
+                }
+                else
+                {
+                    _syncedManualOrderPacked = PackOrderToString(_manualOrderIndices);
                 }
             }
 
@@ -351,10 +392,19 @@ namespace AppleteaSystems.StageSyncSystem
             if (IsSettingsLocked)
             {
                 _syncedSortMode = _lockedSortMode;
+                _syncedManualOrderPacked = _lockedManualOrderPacked;
                 _syncedIgnoreThreshold = _lockedIgnoreThreshold;
                 _syncedIgnorePerformerError = _lockedIgnorePerformerError;
                 _syncedForceLaunchAlways = _lockedForceLaunchAlways;
                 _syncedForceFallbackDelay = _lockedForceFallbackDelay;
+            }
+
+            if (!string.IsNullOrEmpty(_syncedManualOrderPacked) && TryUnpackOrderString(_syncedManualOrderPacked, _manualOrderBuffer))
+            {
+                for (int i = 0; i < _manualOrderIndices.Length; i++)
+                {
+                    _manualOrderIndices[i] = _manualOrderBuffer[i];
+                }
             }
 
             ApplyAllToUIAndCore();
@@ -372,6 +422,7 @@ namespace AppleteaSystems.StageSyncSystem
             if (locked && !_isSettingsLocked)
             {
                 _lockedSortMode = _syncedSortMode;
+                _lockedManualOrderPacked = _syncedManualOrderPacked;
                 _lockedIgnoreThreshold = _syncedIgnoreThreshold;
                 _lockedIgnorePerformerError = _syncedIgnorePerformerError;
                 _lockedForceLaunchAlways = _syncedForceLaunchAlways;
@@ -391,6 +442,11 @@ namespace AppleteaSystems.StageSyncSystem
             if (_sortByNameDescToggle != null) _sortByNameDescToggle.interactable = canEditSettings;
             if (_sortByGameObjectNameAscToggle != null) _sortByGameObjectNameAscToggle.interactable = canEditSettings;
             if (_sortByGameObjectNameDescToggle != null) _sortByGameObjectNameDescToggle.interactable = canEditSettings;
+
+            if (_runtimeManualSorter != null)
+            {
+                _runtimeManualSorter.SetInteractable(canEditSettings);
+            }
 
             if (_ignoreThresholdToggle != null) _ignoreThresholdToggle.interactable = canEditSettings;
             if (_ignorePerformerErrorToggle != null) _ignorePerformerErrorToggle.interactable = canEditSettings;
@@ -682,9 +738,24 @@ namespace AppleteaSystems.StageSyncSystem
             if (newSortMode == _syncedSortMode) return;
 
             TakeOwnership();
-            _syncedSortMode = newSortMode;
-            ApplySortOrderToPlaylist();
-            RequestSerialization();
+            if (newSortMode == (int)DirectionSortMode.Manual)
+            {
+                InheritCurrentOrderIntoManualOrder();
+                _syncedSortMode = newSortMode;
+                ApplySortOrderToPlaylist();
+                RequestSerialization();
+                SendCustomNetworkEvent(
+                    NetworkEventTarget.All,
+                    nameof(NetSyncManualOrder),
+                    _syncedManualOrderPacked
+                );
+            }
+            else
+            {
+                _syncedSortMode = newSortMode;
+                ApplySortOrderToPlaylist();
+                RequestSerialization();
+            }
         }
 
         public void OnSortHierarchySelected()
@@ -720,10 +791,40 @@ namespace AppleteaSystems.StageSyncSystem
             if (_syncedSortMode == (int)mode) return;
 
             TakeOwnership();
-            _syncedSortMode = (int)mode;
-            ApplySortOrderToPlaylist();
-            SyncUITogglesFromState();
-            RequestSerialization();
+            if (mode == DirectionSortMode.Manual)
+            {
+                InheritCurrentOrderIntoManualOrder();
+                _syncedSortMode = (int)mode;
+                ApplySortOrderToPlaylist();
+                SyncUITogglesFromState();
+                RequestSerialization();
+                SendCustomNetworkEvent(
+                    NetworkEventTarget.All,
+                    nameof(NetSyncManualOrder),
+                    _syncedManualOrderPacked
+                );
+            }
+            else
+            {
+                _syncedSortMode = (int)mode;
+                ApplySortOrderToPlaylist();
+                SyncUITogglesFromState();
+                RequestSerialization();
+            }
+        }
+
+        private void InheritCurrentOrderIntoManualOrder()
+        {
+            InitializeSortArrays();
+            if (_currentSortedIndices != null && _manualOrderIndices != null &&
+                _currentSortedIndices.Length == _manualOrderIndices.Length)
+            {
+                for (int i = 0; i < _manualOrderIndices.Length; i++)
+                {
+                    _manualOrderIndices[i] = _currentSortedIndices[i];
+                }
+            }
+            _syncedManualOrderPacked = PackOrderToString(_manualOrderIndices);
         }
 
         public void ApplySortOrderToPlaylist()
@@ -782,6 +883,151 @@ namespace AppleteaSystems.StageSyncSystem
             {
                 _performerUIController.ApplySortOrderFromMainUI(_currentSortedIndices, count);
             }
+
+            UpdateManualSortDrawerState();
+        }
+
+        private void UpdateManualSortDrawerState()
+        {
+            if (_runtimeManualSorter == null) return;
+
+            bool canEditSettings = _canOperateUI && !IsSettingsLocked;
+            _runtimeManualSorter.SetInteractable(canEditSettings);
+
+            if (_syncedSortMode == (int)DirectionSortMode.Manual)
+            {
+                OpenOrSyncManualSortDrawer();
+            }
+            else
+            {
+                _runtimeManualSorter.CloseDrawer();
+                if (_runtimeManualSorter.gameObject.activeSelf)
+                {
+                    _runtimeManualSorter.gameObject.SetActive(false);
+                }
+            }
+        }
+
+        /// <summary>
+        /// 初期状態で非アクティブな UdonBehaviour は未初期化のためメソッド呼び出しが無視される場合がある。
+        /// 先に呼び出し側から GameObject をアクティブ化して初期化させてから Open/Sync を行う。
+        /// </summary>
+        private void OpenOrSyncManualSortDrawer()
+        {
+            if (_runtimeManualSorter == null) return;
+
+            if (!_runtimeManualSorter.gameObject.activeSelf)
+            {
+                _runtimeManualSorter.gameObject.SetActive(true);
+                _runtimeManualSorter.OpenDrawerWithOrder(_manualOrderIndices);
+                _runtimeManualSorter.SetInteractable(_canOperateUI && !IsSettingsLocked);
+            }
+            else
+            {
+                _runtimeManualSorter.SyncOrderFromNetwork(_manualOrderIndices);
+            }
+        }
+
+        public void ApplyManualOrderLocal(int[] order)
+        {
+            InitializeIfNeeded();
+            if (order == null || _directionSWs == null) return;
+
+            InitializeSortArrays();
+            int count = Mathf.Min(order.Length, _currentSortedIndices.Length);
+            for (int slot = 0; slot < count; slot++)
+            {
+                int objIdx = order[slot];
+                _manualOrderIndices[slot] = objIdx;
+                _currentSortedIndices[slot] = objIdx;
+
+                if (objIdx >= 0 && objIdx < _directionSWs.Length && _directionSWs[objIdx] != null)
+                {
+                    Transform itemTransform = _directionSWs[objIdx].transform.parent;
+                    if (itemTransform != null)
+                    {
+                        itemTransform.SetSiblingIndex(slot + 1);
+                    }
+                }
+            }
+
+            if (_performerUIController != null)
+            {
+                _performerUIController.OnPlaylistOrderChanged(_currentSortedIndices);
+            }
+        }
+
+        public void CommitManualOrderAndSync(int[] newOrder)
+        {
+            InitializeIfNeeded();
+            if (newOrder == null || IsSettingsLocked) return;
+
+            TakeOwnership();
+            _syncedSortMode = (int)DirectionSortMode.Manual;
+            ApplyManualOrderLocal(newOrder);
+            _syncedManualOrderPacked = PackOrderToString(_manualOrderIndices);
+            RequestSerialization();
+
+            SendCustomNetworkEvent(
+                NetworkEventTarget.All,
+                nameof(NetSyncManualOrder),
+                _syncedManualOrderPacked
+            );
+        }
+
+        [NetworkCallable(100)]
+        public void NetSyncManualOrder(string packedOrder)
+        {
+            InitializeIfNeeded();
+            if (IsSettingsLocked) return;
+            if (!TryUnpackOrderString(packedOrder, _manualOrderBuffer)) return;
+
+            _syncedSortMode = (int)DirectionSortMode.Manual;
+            _syncedManualOrderPacked = packedOrder;
+
+            SetSortModeToManualVisualOnly();
+            ApplyManualOrderLocal(_manualOrderBuffer);
+            OpenOrSyncManualSortDrawer();
+        }
+
+        public void SetSortModeToManualVisualOnly()
+        {
+            _syncedSortMode = (int)DirectionSortMode.Manual;
+            SyncUITogglesFromState();
+        }
+
+        private string PackOrderToString(int[] order)
+        {
+            if (order == null || order.Length == 0) return "";
+            string result = order[0].ToString();
+            for (int i = 1; i < order.Length; i++)
+            {
+                result = result + "," + order[i];
+            }
+            return result;
+        }
+
+        private bool TryUnpackOrderString(string packed, int[] outBuffer)
+        {
+            if (string.IsNullOrEmpty(packed) || outBuffer == null || outBuffer.Length == 0) return false;
+            string[] tokens = packed.Split(',');
+            if (tokens.Length != outBuffer.Length) return false;
+
+            int count = outBuffer.Length;
+            for (int i = 0; i < count; i++)
+            {
+                if (!int.TryParse(tokens[i], out int idx)) return false;
+                if (idx < 0 || idx >= count) return false;
+
+                // 重複インデックス防止チェック
+                for (int j = 0; j < i; j++)
+                {
+                    if (outBuffer[j] == idx) return false;
+                }
+
+                outBuffer[i] = idx;
+            }
+            return true;
         }
 
         public int GetFirstSortedDirectionIndex()

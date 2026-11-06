@@ -10,6 +10,7 @@ using UnityEditor.Build.Reporting;
 using UnityEditor.SceneManagement;
 using UnityEditorInternal;
 using UnityEngine;
+using UnityEngine.EventSystems;
 using UnityEngine.SceneManagement;
 using UnityEngine.UI;
 using VRC.SDK3.Components;
@@ -376,6 +377,9 @@ namespace AppleteaSystems.StageSyncSystem
             }
 
             SettingDirection_UIController(uiControllerSO, directionSWList);
+
+            // ランタイム手動並び替えドロワー (ManualSortDrawer) の構築とアイテム生成・結線
+            SetupRuntimeManualSorter(dirController, sssCore, uiController, uiControllerSO, directionList);
 
             // 演者用操作端末 (Performer Portable UI) 側の演出予約ボタン群も同期生成・結線
             List<GameObject> performerSWList = new List<GameObject>();
@@ -833,7 +837,479 @@ namespace AppleteaSystems.StageSyncSystem
             allReady &= EnsureSingleProgramAssetReady(typeof(SSSPerformerUIController), "SSSPerformerUIController");
             allReady &= EnsureSingleProgramAssetReady(typeof(SSSPerformerTrigger), "SSSPerformerTrigger");
             allReady &= EnsureSingleProgramAssetReady(typeof(SSSPerformerProximityChecker), "SSSPerformerProximityChecker");
+            allReady &= EnsureSingleProgramAssetReady(typeof(SSSManualSortItem), "SSSManualSortItem");
+            allReady &= EnsureSingleProgramAssetReady(typeof(SSSRuntimeManualSorter), "SSSRuntimeManualSorter");
             return allReady;
+        }
+
+        private static void ConfigureSliderForUdon(Slider slider, VRC.Udon.UdonBehaviour targetUdon, string eventName)
+        {
+            if (slider == null || targetUdon == null) return;
+            SerializedObject sliderSO = new SerializedObject(slider);
+            sliderSO.Update();
+            EnsurePersistentSendCustomEvent(sliderSO, "m_OnValueChanged.m_PersistentCalls.m_Calls", targetUdon, eventName);
+            sliderSO.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        private static void ConfigureScrollbarForUdon(Scrollbar scrollbar, VRC.Udon.UdonBehaviour targetUdon, string eventName)
+        {
+            if (scrollbar == null || targetUdon == null) return;
+            SerializedObject sbSO = new SerializedObject(scrollbar);
+            sbSO.Update();
+            EnsurePersistentSendCustomEvent(sbSO, "m_OnValueChanged.m_PersistentCalls.m_Calls", targetUdon, eventName);
+            sbSO.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        private static void ConfigureEventTriggerForUdon(EventTrigger trigger, EventTriggerType triggerType, VRC.Udon.UdonBehaviour targetUdon, string eventName)
+        {
+            if (trigger == null || targetUdon == null || string.IsNullOrEmpty(eventName)) return;
+
+            SerializedObject trigSO = new SerializedObject(trigger);
+            trigSO.Update();
+
+            SerializedProperty delegatesProp = trigSO.FindProperty("m_Delegates");
+            if (delegatesProp == null || !delegatesProp.isArray) return;
+
+            int entryIdx = -1;
+            for (int i = 0; i < delegatesProp.arraySize; i++)
+            {
+                SerializedProperty entry = delegatesProp.GetArrayElementAtIndex(i);
+                SerializedProperty idProp = entry.FindPropertyRelative("eventID");
+                if (idProp != null && idProp.intValue == (int)triggerType)
+                {
+                    entryIdx = i;
+                    break;
+                }
+            }
+
+            if (entryIdx < 0)
+            {
+                entryIdx = delegatesProp.arraySize;
+                delegatesProp.InsertArrayElementAtIndex(entryIdx);
+                SerializedProperty newEntry = delegatesProp.GetArrayElementAtIndex(entryIdx);
+                newEntry.FindPropertyRelative("eventID").intValue = (int)triggerType;
+                SerializedProperty calls = newEntry.FindPropertyRelative("callback.m_PersistentCalls.m_Calls");
+                if (calls != null && calls.isArray)
+                {
+                    calls.ClearArray();
+                }
+            }
+
+            EnsurePersistentSendCustomEvent(
+                trigSO,
+                $"m_Delegates.Array.data[{entryIdx}].callback.m_PersistentCalls.m_Calls",
+                targetUdon,
+                eventName
+            );
+            trigSO.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        internal static void SetupRuntimeManualSorter(
+            DirectionController dirController,
+            SSSCore sssCore,
+            SSSUIController uiController,
+            SerializedObject uiControllerSO,
+            List<DirectionObject> directionList)
+        {
+            if (dirController == null || sssCore == null || uiController == null || directionList == null) return;
+            if (EditorUtility.IsPersistent(dirController.gameObject)) return;
+            if (!EnsureSingleProgramAssetReady(typeof(SSSRuntimeManualSorter), "SSSRuntimeManualSorter") ||
+                !EnsureSingleProgramAssetReady(typeof(SSSManualSortItem), "SSSManualSortItem"))
+            {
+                return;
+            }
+
+            Transform directionSortRoot = dirController.transform.Find("UI/Canvas/Panel/Settings Menu/Direction Sort");
+            if (directionSortRoot == null) return;
+
+            Font font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+            if (font == null) font = Resources.GetBuiltinResource<Font>("Arial.ttf");
+
+            Sprite roundedSprite = AssetDatabase.LoadAssetAtPath<Sprite>(AssetDatabase.GUIDToAssetPath("9af44d402feae2245837a6dbcfd10ab2"));
+            Sprite pillSprite = AssetDatabase.LoadAssetAtPath<Sprite>(AssetDatabase.GUIDToAssetPath("66dedc5f5aa13774a96eeb074a0de05c"));
+
+            // 1. ManualSortDrawer ルート (Direction Sort直下・LayoutElement(ignoreLayout=true)で既存レイアウトに影響させず下部空き領域に配置)
+            Transform drawerTrans = directionSortRoot.Find("ManualSortDrawer");
+            GameObject drawerGO = drawerTrans != null ? drawerTrans.gameObject : CreateUIElement("ManualSortDrawer", directionSortRoot);
+            RectTransform drawerRect = drawerGO.GetComponent<RectTransform>();
+            drawerRect.anchorMin = new Vector2(0f, 0f);
+            drawerRect.anchorMax = new Vector2(1f, 0f);
+            drawerRect.pivot = new Vector2(0.5f, 1f);
+            drawerRect.anchoredPosition = new Vector2(0f, -24f);
+            drawerRect.sizeDelta = new Vector2(0f, 960f);
+
+            LayoutElement drawerLE = drawerGO.GetComponent<LayoutElement>();
+            if (drawerLE == null) drawerLE = drawerGO.AddComponent<LayoutElement>();
+            drawerLE.ignoreLayout = true;
+
+            SSSRuntimeManualSorter sorter = drawerGO.GetComponent<SSSRuntimeManualSorter>();
+            if (sorter == null)
+            {
+                sorter = drawerGO.AddUdonSharpComponent<SSSRuntimeManualSorter>();
+                VRC.Udon.UdonBehaviour sorterBacking = UdonSharpEditorUtility.GetBackingUdonBehaviour(sorter);
+                if (sorterBacking != null) sorterBacking.SyncMethod = Networking.SyncType.None;
+            }
+            sorter.enabled = false;
+
+            // 2. DrawerHeader (シンプルなタイトルラベルのみ)
+            Transform headerTrans = drawerGO.transform.Find("DrawerHeader");
+            GameObject headerGO = headerTrans != null ? headerTrans.gameObject : CreateUIElement("DrawerHeader", drawerGO.transform);
+            RectTransform headerRect = headerGO.GetComponent<RectTransform>();
+            headerRect.anchorMin = new Vector2(0f, 1f);
+            headerRect.anchorMax = new Vector2(1f, 1f);
+            headerRect.pivot = new Vector2(0.5f, 1f);
+            headerRect.anchoredPosition = Vector2.zero;
+            headerRect.sizeDelta = new Vector2(0f, 36f);
+
+            Transform headerTitleTrans = headerGO.transform.Find("TitleText");
+            Text headerTitleText = headerTitleTrans != null
+                ? headerTitleTrans.GetComponent<Text>()
+                : CreateTextElement("TitleText", headerGO.transform, font, "Manual Sort Order (Drag or ▲/▼ to Reorder)", 23, TextAnchor.MiddleLeft, new Color(0.3019608f, 0.3019608f, 0.3019608f, 1f));
+            headerTitleText.raycastTarget = false;
+            SetStretchRect(headerTitleText.GetComponent<RectTransform>(), 4f, 0f, -4f, 0f);
+
+            // 3. SortScrollView
+            Transform scrollTrans = drawerGO.transform.Find("SortScrollView");
+            GameObject scrollGO = scrollTrans != null ? scrollTrans.gameObject : CreateUIElement("SortScrollView", drawerGO.transform);
+            RectTransform scrollRect = scrollGO.GetComponent<RectTransform>();
+            scrollRect.anchorMin = new Vector2(0f, 0f);
+            scrollRect.anchorMax = new Vector2(1f, 1f);
+            scrollRect.pivot = new Vector2(0.5f, 0.5f);
+            scrollRect.offsetMin = new Vector2(0f, 0f);
+            scrollRect.offsetMax = new Vector2(0f, -44f);
+
+            Image scrollBg = scrollGO.GetComponent<Image>();
+            if (scrollBg == null) scrollBg = scrollGO.AddComponent<Image>();
+            scrollBg.color = new Color(0.82f, 0.82f, 0.84f, 1f);
+            scrollBg.raycastTarget = false;
+            if (roundedSprite != null)
+            {
+                scrollBg.sprite = roundedSprite;
+                scrollBg.type = Image.Type.Sliced;
+                scrollBg.pixelsPerUnitMultiplier = 2f;
+            }
+
+            // 4. Viewport (Mask)
+            Transform vpTrans = scrollGO.transform.Find("Viewport");
+            GameObject vpGO = vpTrans != null ? vpTrans.gameObject : CreateUIElement("Viewport", scrollGO.transform);
+            RectTransform vpRect = vpGO.GetComponent<RectTransform>();
+            vpRect.anchorMin = new Vector2(0f, 0f);
+            vpRect.anchorMax = new Vector2(1f, 1f);
+            vpRect.pivot = new Vector2(0.5f, 1f);
+            vpRect.offsetMin = new Vector2(12f, 12f);
+            vpRect.offsetMax = new Vector2(-28f, -12f);
+
+            Image vpImg = vpGO.GetComponent<Image>();
+            if (vpImg == null) vpImg = vpGO.AddComponent<Image>();
+            vpImg.color = new Color(1f, 1f, 1f, 0.01f);
+            vpImg.raycastTarget = false;
+
+            Mask vpMask = vpGO.GetComponent<Mask>();
+            if (vpMask == null) vpMask = vpGO.AddComponent<Mask>();
+            vpMask.showMaskGraphic = false;
+
+            // 5. Content
+            Transform contentTrans = vpGO.transform.Find("Content");
+            GameObject contentGO = contentTrans != null ? contentTrans.gameObject : CreateUIElement("Content", vpGO.transform);
+            RectTransform contentRect = contentGO.GetComponent<RectTransform>();
+            contentRect.anchorMin = new Vector2(0f, 1f);
+            contentRect.anchorMax = new Vector2(1f, 1f);
+            contentRect.pivot = new Vector2(0.5f, 1f);
+            contentRect.anchoredPosition = Vector2.zero;
+
+            const float itemHeight = 68f;
+            const float itemSpacing = 8f;
+            const float stride = itemHeight + itemSpacing;
+            int count = directionList.Count;
+            float totalContentHeight = count > 0 ? (count * itemHeight) + (Mathf.Max(0, count - 1) * itemSpacing) : 0f;
+            contentRect.sizeDelta = new Vector2(0f, totalContentHeight);
+
+            // 6. PlaceholderBar (挿入先スロットガイド)
+            Transform phTrans = contentGO.transform.Find("PlaceholderBar");
+            GameObject phGO = phTrans != null ? phTrans.gameObject : CreateUIElement("PlaceholderBar", contentGO.transform);
+            RectTransform phRect = phGO.GetComponent<RectTransform>();
+            phRect.anchorMin = new Vector2(0f, 1f);
+            phRect.anchorMax = new Vector2(1f, 1f);
+            phRect.pivot = new Vector2(0.5f, 1f);
+            phRect.anchoredPosition = Vector2.zero;
+            phRect.sizeDelta = new Vector2(0f, itemHeight);
+
+            Image phImg = phGO.GetComponent<Image>();
+            if (phImg == null) phImg = phGO.AddComponent<Image>();
+            phImg.color = new Color(0.31764707f, 0.1882353f, 0.81960785f, 0.28f);
+            phImg.raycastTarget = false;
+            if (roundedSprite != null)
+            {
+                phImg.sprite = roundedSprite;
+                phImg.type = Image.Type.Sliced;
+                phImg.pixelsPerUnitMultiplier = 2f;
+            }
+            phGO.SetActive(false);
+
+            // 既存の SortItem_* を削除して最新の directionList に合わせて再生成
+            for (int i = contentGO.transform.childCount - 1; i >= 0; i--)
+            {
+                Transform child = contentGO.transform.GetChild(i);
+                if (child != phGO.transform)
+                {
+                    DestroyImmediate(child.gameObject);
+                }
+            }
+
+            List<SSSManualSortItem> generatedItems = new List<SSSManualSortItem>(count);
+            for (int i = 0; i < count; i++)
+            {
+                DirectionObject dirObj = directionList[i];
+                string dirTitle = dirObj != null ? dirObj.directionName : $"Direction {i + 1}";
+
+                GameObject itemGO = CreateUIElement($"SortItem_{i}", contentGO.transform);
+                RectTransform itemRect = itemGO.GetComponent<RectTransform>();
+                itemRect.anchorMin = new Vector2(0f, 1f);
+                itemRect.anchorMax = new Vector2(1f, 1f);
+                itemRect.pivot = new Vector2(0.5f, 1f);
+                itemRect.anchoredPosition = new Vector2(0f, -i * stride);
+                itemRect.sizeDelta = new Vector2(0f, itemHeight);
+
+                Image itemBg = itemGO.AddComponent<Image>();
+                itemBg.color = new Color(0.3019608f, 0.3019608f, 0.3019608f, 1f);
+                itemBg.raycastTarget = false;
+                if (roundedSprite != null)
+                {
+                    itemBg.sprite = roundedSprite;
+                    itemBg.type = Image.Type.Sliced;
+                    itemBg.pixelsPerUnitMultiplier = 2f;
+                }
+
+                // DragHandleIcon (≡)
+                GameObject handleGO = CreateUIElement("DragHandleIcon", itemGO.transform);
+                RectTransform handleRect = handleGO.GetComponent<RectTransform>();
+                handleRect.anchorMin = new Vector2(0f, 0f);
+                handleRect.anchorMax = new Vector2(0f, 1f);
+                handleRect.pivot = new Vector2(0.5f, 0.5f);
+                handleRect.offsetMin = new Vector2(14f, 12f);
+                handleRect.offsetMax = new Vector2(50f, -12f);
+                Image handleImg = handleGO.AddComponent<Image>();
+                handleImg.color = new Color(1f, 1f, 1f, 0.16f);
+                handleImg.raycastTarget = false;
+                if (pillSprite != null)
+                {
+                    handleImg.sprite = pillSprite;
+                    handleImg.type = Image.Type.Sliced;
+                    handleImg.pixelsPerUnitMultiplier = 2.5f;
+                }
+                Text handleTxt = CreateTextElement("GripSymbol", handleGO.transform, font, "≡", 26, TextAnchor.MiddleCenter, new Color(1f, 1f, 1f, 0.85f));
+                handleTxt.raycastTarget = false;
+                SetStretchRect(handleTxt.GetComponent<RectTransform>(), 0f, 0f, 0f, 0f);
+
+                // OrderNumberText ("01", "02"...)
+                string rankText = (i + 1) < 10 ? $"0{i + 1}" : (i + 1).ToString();
+                Text orderNumText = CreateTextElement("OrderNumberText", itemGO.transform, font, rankText, 24, TextAnchor.MiddleCenter, new Color(0.78f, 0.74f, 1f, 1f));
+                orderNumText.fontStyle = FontStyle.Bold;
+                orderNumText.raycastTarget = false;
+                RectTransform numRect = orderNumText.GetComponent<RectTransform>();
+                numRect.anchorMin = new Vector2(0f, 0f);
+                numRect.anchorMax = new Vector2(0f, 1f);
+                numRect.pivot = new Vector2(0.5f, 0.5f);
+                numRect.offsetMin = new Vector2(56f, 0f);
+                numRect.offsetMax = new Vector2(114f, 0f);
+
+                // DirectionTitleText
+                Text titleText = CreateTextElement("DirectionTitleText", itemGO.transform, font, dirTitle, 24, TextAnchor.MiddleLeft, Color.white);
+                titleText.raycastTarget = false;
+                RectTransform titleRect = titleText.GetComponent<RectTransform>();
+                titleRect.anchorMin = new Vector2(0f, 0f);
+                titleRect.anchorMax = new Vector2(1f, 1f);
+                titleRect.pivot = new Vector2(0.5f, 0.5f);
+                titleRect.offsetMin = new Vector2(122f, 4f);
+                titleRect.offsetMax = new Vector2(-148f, -4f);
+
+                // MoveUpButton (▲)
+                Button upBtn = CreateActionButton("MoveUpButton", itemGO.transform, font, "▲", 20, new Color(0.20f, 0.20f, 0.22f, 1f));
+                RectTransform upRect = upBtn.GetComponent<RectTransform>();
+                upRect.anchorMin = new Vector2(1f, 0.5f);
+                upRect.anchorMax = new Vector2(1f, 0.5f);
+                upRect.pivot = new Vector2(1f, 0.5f);
+                upRect.anchoredPosition = new Vector2(-76f, 0f);
+                upRect.sizeDelta = new Vector2(58f, 52f);
+                Image upImg = upBtn.GetComponent<Image>();
+                if (upImg != null && pillSprite != null)
+                {
+                    upImg.sprite = pillSprite;
+                    upImg.type = Image.Type.Sliced;
+                    upImg.pixelsPerUnitMultiplier = 2.5f;
+                }
+                Text upTxt = upBtn.GetComponentInChildren<Text>(true);
+                if (upTxt != null) upTxt.raycastTarget = false;
+
+                // MoveDownButton (▼)
+                Button downBtn = CreateActionButton("MoveDownButton", itemGO.transform, font, "▼", 20, new Color(0.20f, 0.20f, 0.22f, 1f));
+                RectTransform downRect = downBtn.GetComponent<RectTransform>();
+                downRect.anchorMin = new Vector2(1f, 0.5f);
+                downRect.anchorMax = new Vector2(1f, 0.5f);
+                downRect.pivot = new Vector2(1f, 0.5f);
+                downRect.anchoredPosition = new Vector2(-12f, 0f);
+                downRect.sizeDelta = new Vector2(58f, 52f);
+                Image downImg = downBtn.GetComponent<Image>();
+                if (downImg != null && pillSprite != null)
+                {
+                    downImg.sprite = pillSprite;
+                    downImg.type = Image.Type.Sliced;
+                    downImg.pixelsPerUnitMultiplier = 2.5f;
+                }
+                Text downTxt = downBtn.GetComponentInChildren<Text>(true);
+                if (downTxt != null) downTxt.raycastTarget = false;
+
+                // SSSManualSortItem コンポーネント付与・結線
+                SSSManualSortItem sortItem = itemGO.AddUdonSharpComponent<SSSManualSortItem>();
+                VRC.Udon.UdonBehaviour itemUdon = UdonSharpEditorUtility.GetBackingUdonBehaviour(sortItem);
+                if (itemUdon != null) itemUdon.SyncMethod = Networking.SyncType.None;
+
+                SerializedObject itemSO = new SerializedObject(sortItem);
+                itemSO.Update();
+                itemSO.FindProperty("_sorter").objectReferenceValue = sorter;
+                itemSO.FindProperty("_objectIndex").intValue = i;
+                itemSO.FindProperty("_rectTransform").objectReferenceValue = itemRect;
+                itemSO.FindProperty("_bgImage").objectReferenceValue = itemBg;
+                itemSO.FindProperty("_orderNumberText").objectReferenceValue = orderNumText;
+                itemSO.FindProperty("_directionTitleText").objectReferenceValue = titleText;
+                itemSO.FindProperty("_moveUpButton").objectReferenceValue = upBtn;
+                itemSO.FindProperty("_moveDownButton").objectReferenceValue = downBtn;
+                itemSO.FindProperty("_dragHandleImage").objectReferenceValue = handleImg;
+                itemSO.ApplyModifiedPropertiesWithoutUndo();
+
+                if (itemUdon != null)
+                {
+                    ConfigureButtonForUdon(upBtn, itemUdon, "OnMoveUpClicked", interactable: i > 0);
+                    ConfigureButtonForUdon(downBtn, itemUdon, "OnMoveDownClicked", interactable: i < count - 1);
+                }
+
+                UdonSharpEditorUtility.CopyProxyToUdon(sortItem);
+                generatedItems.Add(sortItem);
+            }
+
+            // 7. DragInputOverlaySlider (Viewportの左〜中央領域をカバーし、右端の▲/▼ボタン列とScrollbarを干渉させない)
+            Transform overlayTrans = scrollGO.transform.Find("DragInputOverlaySlider");
+            GameObject overlayGO = overlayTrans != null ? overlayTrans.gameObject : CreateUIElement("DragInputOverlaySlider", scrollGO.transform);
+            RectTransform overlayRect = overlayGO.GetComponent<RectTransform>();
+            overlayRect.anchorMin = new Vector2(0f, 0f);
+            overlayRect.anchorMax = new Vector2(1f, 1f);
+            overlayRect.pivot = new Vector2(0.5f, 0.5f);
+            overlayRect.offsetMin = new Vector2(12f, 12f);
+            overlayRect.offsetMax = new Vector2(-176f, -12f);
+
+            Transform rayTargetTrans = overlayGO.transform.Find("OverlayRaycastTarget");
+            GameObject rayTargetGO = rayTargetTrans != null ? rayTargetTrans.gameObject : CreateUIElement("OverlayRaycastTarget", overlayGO.transform);
+            SetStretchRect(rayTargetGO.GetComponent<RectTransform>(), 0f, 0f, 0f, 0f);
+            Image rayTargetImg = rayTargetGO.GetComponent<Image>();
+            if (rayTargetImg == null) rayTargetImg = rayTargetGO.AddComponent<Image>();
+            rayTargetImg.color = new Color(1f, 1f, 1f, 0.003f);
+            rayTargetImg.raycastTarget = true;
+
+            // Slider は handleRect / fillRect のどちらも未設定だと UpdateDrag 内でクリック位置を値に変換できず value が常に 0 のままになるため、
+            // オーバーレイ全面をカバーする不可視の Handle Slide Area / Handle を用意してポインター位置 → value 変換を有効化する
+            Transform overlayHandleAreaTrans = overlayGO.transform.Find("Handle Slide Area");
+            GameObject overlayHandleAreaGO = overlayHandleAreaTrans != null ? overlayHandleAreaTrans.gameObject : CreateUIElement("Handle Slide Area", overlayGO.transform);
+            SetStretchRect(overlayHandleAreaGO.GetComponent<RectTransform>(), 0f, 0f, 0f, 0f);
+
+            Transform overlayHandleTrans = overlayHandleAreaGO.transform.Find("Handle");
+            GameObject overlayHandleGO = overlayHandleTrans != null ? overlayHandleTrans.gameObject : CreateUIElement("Handle", overlayHandleAreaGO.transform);
+            RectTransform overlayHandleRect = overlayHandleGO.GetComponent<RectTransform>();
+            overlayHandleRect.sizeDelta = Vector2.zero;
+
+            Slider overlaySlider = overlayGO.GetComponent<Slider>();
+            if (overlaySlider == null) overlaySlider = overlayGO.AddComponent<Slider>();
+            overlaySlider.fillRect = null;
+            overlaySlider.handleRect = overlayHandleRect;
+            overlaySlider.transition = Selectable.Transition.None;
+            overlaySlider.direction = Slider.Direction.TopToBottom;
+            overlaySlider.minValue = 0f;
+            overlaySlider.maxValue = 1f;
+            overlaySlider.wholeNumbers = false;
+            overlaySlider.targetGraphic = rayTargetImg;
+            Navigation noneNav = new Navigation { mode = Navigation.Mode.None };
+            overlaySlider.navigation = noneNav;
+
+            EventTrigger overlayTrigger = overlayGO.GetComponent<EventTrigger>();
+            if (overlayTrigger == null) overlayTrigger = overlayGO.AddComponent<EventTrigger>();
+
+            // 8. VerticalScrollbar
+            Transform sbTrans = scrollGO.transform.Find("VerticalScrollbar");
+            GameObject sbGO = sbTrans != null ? sbTrans.gameObject : CreateUIElement("VerticalScrollbar", scrollGO.transform);
+            RectTransform sbRect = sbGO.GetComponent<RectTransform>();
+            sbRect.anchorMin = new Vector2(1f, 0f);
+            sbRect.anchorMax = new Vector2(1f, 1f);
+            sbRect.pivot = new Vector2(1f, 0.5f);
+            sbRect.offsetMin = new Vector2(-22f, 12f);
+            sbRect.offsetMax = new Vector2(-6f, -12f);
+
+            Image sbBg = sbGO.GetComponent<Image>();
+            if (sbBg == null) sbBg = sbGO.AddComponent<Image>();
+            sbBg.color = new Color(0.72f, 0.72f, 0.75f, 1f);
+
+            Transform slidingAreaTrans = sbGO.transform.Find("Sliding Area");
+            GameObject slidingAreaGO = slidingAreaTrans != null ? slidingAreaTrans.gameObject : CreateUIElement("Sliding Area", sbGO.transform);
+            SetStretchRect(slidingAreaGO.GetComponent<RectTransform>(), 0f, 0f, 0f, 0f);
+
+            Transform sbHandleTrans = slidingAreaGO.transform.Find("Handle");
+            GameObject sbHandleGO = sbHandleTrans != null ? sbHandleTrans.gameObject : CreateUIElement("Handle", slidingAreaGO.transform);
+            SetStretchRect(sbHandleGO.GetComponent<RectTransform>(), 0f, 0f, 0f, 0f);
+            Image sbHandleImg = sbHandleGO.GetComponent<Image>();
+            if (sbHandleImg == null) sbHandleImg = sbHandleGO.AddComponent<Image>();
+            sbHandleImg.color = new Color(0.45f, 0.45f, 0.48f, 1f);
+
+            Scrollbar verticalScrollbar = sbGO.GetComponent<Scrollbar>();
+            if (verticalScrollbar == null) verticalScrollbar = sbGO.AddComponent<Scrollbar>();
+            verticalScrollbar.direction = Scrollbar.Direction.BottomToTop;
+            verticalScrollbar.targetGraphic = sbHandleImg;
+            verticalScrollbar.handleRect = sbHandleGO.GetComponent<RectTransform>();
+            verticalScrollbar.size = 1f;
+            verticalScrollbar.value = 1f;
+
+            // 9. SSSRuntimeManualSorter のシリアライズ参照とイベント結線
+            SerializedObject sorterSO = new SerializedObject(sorter);
+            sorterSO.Update();
+            sorterSO.FindProperty("_sssCore").objectReferenceValue = sssCore;
+            sorterSO.FindProperty("_uiController").objectReferenceValue = uiController;
+            sorterSO.FindProperty("_sortViewportRect").objectReferenceValue = vpRect;
+            sorterSO.FindProperty("_sortContentRect").objectReferenceValue = contentRect;
+            sorterSO.FindProperty("_placeholderBarRect").objectReferenceValue = phRect;
+            sorterSO.FindProperty("_dragOverlaySlider").objectReferenceValue = overlaySlider;
+            sorterSO.FindProperty("_verticalScrollbar").objectReferenceValue = verticalScrollbar;
+
+            SerializedProperty itemsProp = sorterSO.FindProperty("_itemsByObjectIndex");
+            if (itemsProp != null)
+            {
+                itemsProp.arraySize = generatedItems.Count;
+                for (int i = 0; i < generatedItems.Count; i++)
+                {
+                    itemsProp.GetArrayElementAtIndex(i).objectReferenceValue = generatedItems[i];
+                }
+            }
+            sorterSO.ApplyModifiedPropertiesWithoutUndo();
+
+            VRC.Udon.UdonBehaviour sorterUdon = UdonSharpEditorUtility.GetBackingUdonBehaviour(sorter);
+            if (sorterUdon != null)
+            {
+                ConfigureSliderForUdon(overlaySlider, sorterUdon, "OnDragSliderValueChanged");
+                ConfigureEventTriggerForUdon(overlayTrigger, EventTriggerType.PointerDown, sorterUdon, "OnDragSliderPointerDown");
+                ConfigureEventTriggerForUdon(overlayTrigger, EventTriggerType.PointerUp, sorterUdon, "OnDragSliderPointerUp");
+                ConfigureScrollbarForUdon(verticalScrollbar, sorterUdon, "OnVerticalScrollbarValueChanged");
+            }
+
+            UdonSharpEditorUtility.CopyProxyToUdon(sorter);
+
+            // 初期表示状態は Manual トグルがONの場合のみ Active、それ以外は非表示
+            Toggle manualToggle = uiControllerSO != null ? uiControllerSO.FindProperty("_sortManualToggle")?.objectReferenceValue as Toggle : null;
+            bool isManualOn = manualToggle != null && manualToggle.isOn;
+            drawerGO.SetActive(isManualOn);
+
+            if (uiControllerSO != null)
+            {
+                uiControllerSO.Update();
+                SerializedProperty sorterRefProp = uiControllerSO.FindProperty("_runtimeManualSorter");
+                if (sorterRefProp != null) sorterRefProp.objectReferenceValue = sorter;
+                uiControllerSO.ApplyModifiedPropertiesWithoutUndo();
+            }
         }
 
         private static bool EnsureSingleProgramAssetReady(Type scriptType, string scriptName)
@@ -869,6 +1345,12 @@ namespace AppleteaSystems.StageSyncSystem
                     UdonSharpProgramAsset.CompileAllCsPrograms(true);
                     return false;
                 }
+            }
+
+            // UdonSharpのコンパイルエラーが存在する場合は再コンパイルを繰り返し要求しない
+            if (UdonSharpProgramAsset.AnyUdonSharpScriptHasError())
+            {
+                return false;
             }
 
             if (programAsset.ScriptVersion < UdonSharpProgramVersion.CurrentVersion ||
@@ -1911,6 +2393,8 @@ namespace AppleteaSystems.StageSyncSystem
             if (obj.GetComponentInChildren<SSSPerformerUIController>(true) != null || obj.GetComponentInParent<SSSPerformerUIController>(true) != null) return true;
             if (obj.GetComponentInChildren<SSSPerformerTrigger>(true) != null || obj.GetComponentInParent<SSSPerformerTrigger>(true) != null) return true;
             if (obj.GetComponentInChildren<SSSPerformerProximityChecker>(true) != null || obj.GetComponentInParent<SSSPerformerProximityChecker>(true) != null) return true;
+            if (obj.GetComponentInChildren<SSSRuntimeManualSorter>(true) != null || obj.GetComponentInParent<SSSRuntimeManualSorter>(true) != null) return true;
+            if (obj.GetComponentInChildren<SSSManualSortItem>(true) != null || obj.GetComponentInParent<SSSManualSortItem>(true) != null) return true;
             if (obj.GetComponentInChildren<DirectionController>(true) != null) return true;
             if (obj.GetComponentInChildren<DirectionObject>(true) != null || obj.GetComponentInParent<DirectionObject>(true) != null) return true;
             if (obj.GetComponentInChildren<DirectionSwitch>(true) != null || obj.GetComponentInParent<DirectionSwitch>(true) != null) return true;
@@ -2033,11 +2517,62 @@ namespace AppleteaSystems.StageSyncSystem
     [InitializeOnLoad]
     public static class SSSPerformerPortableUI_AutoSetup
     {
-        private const string AutoSetupSessionKey = "SSS_PerformerPortableUI_AutoSetupDone_v2";
+        private const string AutoSetupSessionKey = "SSS_PerformerPortableUI_AutoSetupDone_v5";
 
         static SSSPerformerPortableUI_AutoSetup()
         {
             EditorApplication.delayCall += TryAutoSetup;
+            Undo.postprocessModifications += OnPostprocessModifications;
+        }
+
+        /// <summary>
+        /// デバッグ用: Editモード中に Inspector 上で Sort 系 Toggle の isOn が変更された場合、
+        /// Manual Toggle の状態に合わせて ManualSortDrawer の表示/非表示を同期する。
+        /// </summary>
+        private static UndoPropertyModification[] OnPostprocessModifications(UndoPropertyModification[] modifications)
+        {
+            if (EditorApplication.isPlayingOrWillChangePlaymode || modifications == null) return modifications;
+
+            for (int i = 0; i < modifications.Length; i++)
+            {
+                PropertyModification pm = modifications[i].currentValue;
+                if (pm != null && pm.target is Toggle && pm.propertyPath == "m_IsOn")
+                {
+                    EditorApplication.delayCall -= SyncManualSortDrawerVisibilityInEditMode;
+                    EditorApplication.delayCall += SyncManualSortDrawerVisibilityInEditMode;
+                    break;
+                }
+            }
+            return modifications;
+        }
+
+        private static void SyncManualSortDrawerVisibilityInEditMode()
+        {
+            if (EditorApplication.isPlayingOrWillChangePlaymode) return;
+
+            SSSUIController[] uiControllers = UnityEngine.Object.FindObjectsByType<SSSUIController>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            foreach (SSSUIController ui in uiControllers)
+            {
+                if (ui == null || EditorUtility.IsPersistent(ui.gameObject)) continue;
+
+                SerializedObject uiSO = new SerializedObject(ui);
+                Toggle manualToggle = uiSO.FindProperty("_sortManualToggle")?.objectReferenceValue as Toggle;
+                SSSRuntimeManualSorter sorter = uiSO.FindProperty("_runtimeManualSorter")?.objectReferenceValue as SSSRuntimeManualSorter;
+                if (manualToggle == null || sorter == null) continue;
+
+                bool show = manualToggle.isOn;
+                GameObject drawerGO = sorter.gameObject;
+                if (drawerGO.activeSelf != show)
+                {
+                    Undo.RecordObject(drawerGO, "Toggle Manual Sort Drawer");
+                    drawerGO.SetActive(show);
+                    EditorUtility.SetDirty(drawerGO);
+                    if (drawerGO.scene.IsValid())
+                    {
+                        EditorSceneManager.MarkSceneDirty(drawerGO.scene);
+                    }
+                }
+            }
         }
 
         private static void TryAutoSetup()

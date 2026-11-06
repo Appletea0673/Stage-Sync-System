@@ -1176,6 +1176,12 @@ namespace AppleteaSystems.StageSyncSystem
             }
         }
 
+        public void OnPlaylistOrderChanged(int[] sortedIndices)
+        {
+            if (sortedIndices == null) return;
+            ApplySortOrderFromMainUI(sortedIndices, sortedIndices.Length);
+        }
+
         public void ApplySortOrderFromMainUI(int[] sortedIndices, int count)
         {
             InitializeIfNeeded();
