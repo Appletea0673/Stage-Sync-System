@@ -355,6 +355,9 @@ namespace AppleteaSystems.StageSyncSystem
 #if SSS_YAMAPLAYER
                 if (IsUsingYamaPlayer()) return YamaPlayer_controller.Loop;
 #endif
+#if SSS_IWASYNC
+                if (IsUsingIwaSync()) return Iwasync_core.loop;
+#endif
                 return false;
             }
         }
@@ -662,6 +665,17 @@ namespace AppleteaSystems.StageSyncSystem
             if (_isWaitingForReady)
             {
                 if (_isWaitingForCooldownLoad || !IsCurrentDirectionTrackLoaded()) return;
+#if SSS_IWASYNC
+                if (IsUsingIwaSync())
+                {
+                    // IwaSyncではOnVideoReady時点ではisPlayingがfalseであり動画ストリームの再生準備が未完了。
+                    // ここでReady報告を行うと、新動画の準備完了前に上演が開始され、
+                    // 旧動画の残滓再生や頭欠け・途中再生（5秒スキップ）の原因となる。
+                    // 確実に再生準備が整うのはOnVideoStartのため、ここではPause状態を整えるのみにとどめる。
+                    PauseLocalVideoPlayerAtZero();
+                    return;
+                }
+#endif
                 MuteVideoPlayerForLoading();
                 PauseLocalVideoPlayerAtZero();
                 ReportLocalPlayerReady();
@@ -1349,6 +1363,10 @@ namespace AppleteaSystems.StageSyncSystem
                 Iwasync_core.TakeOwnership();
                 Iwasync_core.clockTime = _stageStartServerTime;
                 Iwasync_core.time = 0f;
+                if (_iwaSyncBridge != null)
+                {
+                    _iwaSyncBridge.SeekDirect(0f);
+                }
                 Iwasync_core.Play();
                 Iwasync_core.RequestSerialization();
             }
@@ -2310,6 +2328,7 @@ namespace AppleteaSystems.StageSyncSystem
                 _isInternalVideoStop = true;
                 Iwasync_core.Stop();
                 _isInternalVideoStop = false;
+                Iwasync_core.muted = true;
                 Iwasync_core.PlayURL(_MODE_VIDEO, dir.videoURL);
                 Iwasync_core.Pause();
                 Iwasync_core.RequestSerialization();
@@ -2355,6 +2374,10 @@ namespace AppleteaSystems.StageSyncSystem
             if (IsUsingIwaSync())
             {
                 Iwasync_core.Pause();
+                if (_iwaSyncBridge != null)
+                {
+                    _iwaSyncBridge.SeekDirect(0f);
+                }
                 Iwasync_core.time = 0f;
             }
 #endif
@@ -2410,7 +2433,14 @@ namespace AppleteaSystems.StageSyncSystem
                 float duration = Iwasync_core.duration;
                 if (duration > 0f && !float.IsInfinity(duration))
                 {
-                    targetTime = Mathf.Clamp(targetTime, 0f, duration);
+                    if (Iwasync_core.loop)
+                    {
+                        targetTime = targetTime % duration;
+                    }
+                    else
+                    {
+                        targetTime = Mathf.Clamp(targetTime, 0f, duration);
+                    }
                 }
             }
 #endif
@@ -2465,12 +2495,22 @@ namespace AppleteaSystems.StageSyncSystem
 #if SSS_IWASYNC
             if (IsUsingIwaSync())
             {
-                if (Iwasync_core.isPlaying && Mathf.Abs(Iwasync_core.time - targetTime) >= _VIDEO_SEEK_THRESHOLD)
+                if (Iwasync_core.isPlaying)
                 {
-                    float compensatedTarget = targetTime > 0.001f
-                        ? ClampStageVideoTime(targetTime + _AVPRO_SEEK_LAG_COMPENSATION)
-                        : targetTime;
-                    Iwasync_core.time = compensatedTarget;
+                    float currentVideoTime = GetCurrentVideoTime();
+                    // IwaSyncでは Iwasync_core.time に targetTime を代入すると _time に値が保持され、
+                    // SyncTimePeriodic での経過時間計算 (Now - _clockTime) と二重加算されて約10秒のスキップが発生する。
+                    // そのため、Iwasync_core.time の代入は行わず、ハードウェアプレイヤーを直接シークして _time = 0f / _clockTime = _stageStartServerTime を維持する。
+                    if (Mathf.Abs(currentVideoTime - targetTime) >= _VIDEO_SEEK_THRESHOLD)
+                    {
+                        float compensatedTarget = targetTime > 0.001f
+                            ? ClampStageVideoTime(targetTime + _AVPRO_SEEK_LAG_COMPENSATION)
+                            : targetTime;
+                        if (_iwaSyncBridge != null)
+                        {
+                            _iwaSyncBridge.SeekDirect(compensatedTarget);
+                        }
+                    }
                 }
             }
 #endif
@@ -2561,7 +2601,16 @@ namespace AppleteaSystems.StageSyncSystem
 #if SSS_IWASYNC
             if (IsUsingIwaSync())
             {
-                Iwasync_core.Stop();
+                if (Iwasync_core.isOwner)
+                {
+                    Iwasync_core.Stop();
+                }
+                else
+                {
+                    // 非OwnerはIwasync_core.Stop()を呼んではいけない（ローカルの_urlがEmptyに破棄されてしまうため）
+                    // 代わりに再生中であれば一時停止のみ行う
+                    Iwasync_core.Pause();
+                }
             }
 #endif
             _isInternalVideoStop = false;
@@ -2606,6 +2655,12 @@ namespace AppleteaSystems.StageSyncSystem
                 _isMutedBySSS = true;
             }
             SetVideoPlayerVolume(0.0f);
+#if SSS_IWASYNC
+            if (IsUsingIwaSync())
+            {
+                Iwasync_core.muted = true;
+            }
+#endif
         }
 
         private void RestoreVideoPlayerVolume()
@@ -2617,6 +2672,12 @@ namespace AppleteaSystems.StageSyncSystem
                 {
                     SetVideoPlayerVolume(_volumeTemp);
                 }
+#if SSS_IWASYNC
+                if (IsUsingIwaSync())
+                {
+                    Iwasync_core.muted = false;
+                }
+#endif
             }
         }
 

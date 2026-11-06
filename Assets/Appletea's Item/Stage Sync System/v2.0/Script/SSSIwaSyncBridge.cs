@@ -1,6 +1,7 @@
 using UdonSharp;
 using UnityEngine;
 using VRC.SDK3.Components.Video;
+using VRC.SDK3.Video.Components.Base;
 using VRC.SDKBase;
 #if SSS_IWASYNC
 using HoshinoLabs.IwaSync3.Udon;
@@ -24,6 +25,8 @@ namespace AppleteaSystems.StageSyncSystem
 
 #if SSS_IWASYNC
         private VideoCore _registeredCore;
+        private BaseVRCVideoPlayer _unityVideoPlayer;
+        private BaseVRCVideoPlayer _avProVideoPlayer;
 
         public VideoCore IwasyncCore
         {
@@ -54,9 +57,63 @@ namespace AppleteaSystems.StageSyncSystem
             {
                 _registeredCore = _iwasyncCore;
                 _iwasyncCore.AddListener(this);
+                FindVideoPlayers();
             }
 #endif
         }
+
+#if SSS_IWASYNC
+        public void FindVideoPlayers()
+        {
+            if (_iwasyncCore == null) return;
+            BaseVRCVideoPlayer[] players = _iwasyncCore.GetComponentsInChildren<BaseVRCVideoPlayer>(true);
+            if (players != null)
+            {
+                for (int i = 0; i < players.Length; i++)
+                {
+                    if (players[i] == null) continue;
+                    string n = players[i].gameObject.name;
+                    if (n.Contains("Unity"))
+                    {
+                        _unityVideoPlayer = players[i];
+                    }
+                    else if (n.Contains("AVPro"))
+                    {
+                        _avProVideoPlayer = players[i];
+                    }
+                }
+                if (_unityVideoPlayer == null && players.Length > 0) _unityVideoPlayer = players[0];
+                if (_avProVideoPlayer == null && players.Length > 1) _avProVideoPlayer = players[1];
+            }
+        }
+
+        public BaseVRCVideoPlayer GetActiveVideoPlayer()
+        {
+            if (_iwasyncCore == null) return null;
+            if (_unityVideoPlayer == null && _avProVideoPlayer == null)
+            {
+                FindVideoPlayers();
+            }
+            if (_iwasyncCore.isModeStream)
+            {
+                return _avProVideoPlayer != null ? _avProVideoPlayer : _unityVideoPlayer;
+            }
+            return _unityVideoPlayer != null ? _unityVideoPlayer : _avProVideoPlayer;
+        }
+
+        public void SeekDirect(float targetTime)
+        {
+            BaseVRCVideoPlayer player = GetActiveVideoPlayer();
+            if (player != null)
+            {
+                player.SetTime(targetTime);
+            }
+        }
+#else
+        public void SeekDirect(float targetTime)
+        {
+        }
+#endif
 
 #if SSS_IWASYNC
         public override void OnVideoReady()
