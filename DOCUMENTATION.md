@@ -19,6 +19,8 @@
    - [2.5 機能⑤：外部操作防止・エリア判定 (UIOperatorChecker)](#25-機能外部操作防止エリア判定-uioperatorchecker)
    - [2.6 機能⑥：演者専用オブジェクト切り替え (Performer Object Toggle)](#26-機能演者専用オブジェクト切り替え-performer-object-toggle)
    - [2.7 機能⑦：デュアル動画プレイヤー連携 (SSSYamaBridge / SSSIwaSyncBridge)](#27-機能デュアル動画プレイヤー連携-sssyamabridge--sssiwasyncbridge)
+   - [2.8 機能⑧：演者用操作端末 (Performer Portable UI & Auto-Return Trigger)](#28-機能演者用操作端末-performer-portable-ui--auto-return-trigger)
+   - [2.9 機能⑨：Runtime演出手動ソート機能 (Runtime Manual D&D Sort)](#29-機能runtime演出手動ソート機能-runtime-manual-dd-sort)
 3. [技術的な制約・非機能要件 (Technical Constraints & Non-Functional Requirements)](#3-技術的な制約非機能要件-technical-constraints--non-functional-requirements)
    - [3.1 パフォーマンス要件 (Performance Requirements)](#31-パフォーマンス要件-performance-requirements)
    - [3.2 環境固有の制約 (Platform Specific Constraints)](#32-環境固有の制約-platform-specific-constraints)
@@ -85,12 +87,22 @@
 flowchart TD
     subgraph Control["1. 操作・トリガー層"]
         User["オペレーター / 観客"] -->|ボタン押下 / Interact| UI["SSSUIController / DirectionSwitch"]
+        User -->|D&D並び替え| Sorter["SSSRuntimeManualSorter (手動ソート)"]
+        Sorter -->|順序確定| UI
         Area["演者"] -->|コライダー侵入/退出| PC["PerformerChecker (ステージコライダー)"]
         OpArea["操作者"] -->|近接侵入/退出| UOC["UIOperatorChecker (UI保護コライダー)"]
+        
+        subgraph PerformerTerminal["演者用操作端末 (Performer Portable UI)"]
+            PerfProximity["SSSPerformerProximityChecker (近接検知)"] -->|表示/Collider切替| PerfParent["SSSPerformerUIController (親機)"]
+            PerfActor["演者 (壇上)"] -->|予約選択 / Force Start / 緊急停止| PerfParent
+            PerfActor -->|子機Pickup持ち込み & Use発火| PerfChild["SSSPerformerTrigger (子機リモコン)"]
+            PerfChild -->|発火通知 & 自動帰還| PerfParent
+        end
     end
 
     subgraph CoreLogic["2. コア制御・遅延計算層 (SSSCore)"]
         UI -->|StartHandling(index)| SSS["SSSCore (Owner)"]
+        PerfParent -->|NetRequestStartFromPerformer / Force / Stop| SSS
         PC -->|IsPerformer = true/false| SSS
         UOC -->|SetOperatorInteractable| UI
 
@@ -116,6 +128,7 @@ flowchart TD
         IB -->|PlayURL / offsetTime / time| Iwa["iwaSync3 VideoCore"]
         SSS -->|毎フレーム追従 (SyncAccuracy=40ms)| Dir["DirectionObject (PlayableDirector)"]
         SSS -->|演者専用表示切り替え| PerfObjs["Performer Objects (返しモニター等)"]
+        SSS -->|進捗・状態通知| PerfParent
     end
 ```
 
@@ -126,7 +139,12 @@ flowchart TD
 | コンポーネント | 配置オブジェクト | 責務・役割 |
 | :--- | :--- | :--- |
 | **[`SSSCore`](file:///D:/Development/Unity%20Terminal/VirtualReality/2022_3.22f1/Develop/Stage-Sync-System/Assets/Appletea's%20Item/Stage%20Sync%20System/v2.0/Script/SSSCore.cs)** | `Core` | システム中核。双方向遅延計測、オフセット計算、全員ロード待機判定、動画・Timeline制御、上演ライフサイクル統括。 |
-| **[`SSSUIController`](file:///D:/Development/Unity%20Terminal/VirtualReality/2022_3.22f1/Develop/Stage-Sync-System/Assets/Appletea's%20Item/Stage%20Sync%20System/v2.0/Script/SSSUIController.cs)** | `UI` | インワールド操作盤。演出リスト管理、リアルタイムソート、Force Launch設定、ステータス表示（人数・色・ランプ）。 |
+| **[`SSSUIController`](file:///D:/Development/Unity%20Terminal/VirtualReality/2022_3.22f1/Develop/Stage-Sync-System/Assets/Appletea's%20Item/Stage%20Sync%20System/v2.0/Script/SSSUIController.cs)** | `UI` | インワールド操作盤。演出リスト管理、ソートモード切替、Force Launch設定、ステータス表示（人数・色・ランプ）。 |
+| **[`SSSPerformerUIController`](file:///D:/Development/Unity%20Terminal/VirtualReality/2022_3.22f1/Develop/Stage-Sync-System/Assets/Appletea's%20Item/Stage%20Sync%20System/v2.0/Script/SSSPerformerUIController.cs)** | `Performer Portable UI` | 演者用端末の親機UI制御。演出予約（Standby）、オートアドバンス計算、Pickupロック、状態別画面遷移、`SSSCore` へのRPC送信。 |
+| **[`SSSPerformerTrigger`](file:///D:/Development/Unity%20Terminal/VirtualReality/2022_3.22f1/Develop/Stage-Sync-System/Assets/Appletea's%20Item/Stage%20Sync%20System/v2.0/Script/SSSPerformerTrigger.cs)** | `PerformerTrigger` | 演者用端末の子機トリガー。立ち位置へ持ち込み `Use` で予約演出を発火。発火後または手放した瞬間にホルスターへ自動帰還。 |
+| **[`SSSPerformerProximityChecker`](file:///D:/Development/Unity%20Terminal/VirtualReality/2022_3.22f1/Develop/Stage-Sync-System/Assets/Appletea's%20Item/Stage%20Sync%20System/v2.0/Script/SSSPerformerProximityChecker.cs)** | `ProximityChecker` | 演者端末の近接検知（1.8m）。演者接近時のみ親機Canvasを表示・コライダー有効化し、離脱時は完全非表示化。 |
+| **[`SSSRuntimeManualSorter`](file:///D:/Development/Unity%20Terminal/VirtualReality/2022_3.22f1/Develop/Stage-Sync-System/Assets/Appletea's%20Item/Stage%20Sync%20System/v2.0/Script/SSSRuntimeManualSorter.cs)** | `ManualSortDrawer` | メインUI下部のRuntime手動ソートドロワー制御。VR/Desktop対応D&D、オンデマンドLerpアニメーション、順序同期。 |
+| **[`SSSManualSortItem`](file:///D:/Development/Unity%20Terminal/VirtualReality/2022_3.22f1/Develop/Stage-Sync-System/Assets/Appletea's%20Item/Stage%20Sync%20System/v2.0/Script/SSSManualSortItem.cs)** | `SortItem_X` | 手動ソートドロワー内の各演出行アイテム。タイトル表示、ドラッグ中ハイライト、▲/▼手動移動ボタンの中継。 |
 | **[`DirectionController`](file:///D:/Development/Unity%20Terminal/VirtualReality/2022_3.22f1/Develop/Stage-Sync-System/Assets/Appletea's%20Item/Stage%20Sync%20System/v2.0/Script/DirectionController.cs)** | `Stage Sync System (Root)` | システム最上位コンポーネント。エディタ拡張の基点となり、各コンポーネント間の参照を自動統合。 |
 | **[`DirectionObject`](file:///D:/Development/Unity%20Terminal/VirtualReality/2022_3.22f1/Develop/Stage-Sync-System/Assets/Appletea's%20Item/Stage%20Sync%20System/v2.0/Script/DirectionObject.cs)** | 各演出オブジェクト | シーン上の各演出（`PlayableDirector`）にアタッチ。演出名、動画URL、演者への再生可否フラグを保持。 |
 | **[`DirectionSwitch`](file:///D:/Development/Unity%20Terminal/VirtualReality/2022_3.22f1/Develop/Stage-Sync-System/Assets/Appletea's%20Item/Stage%20Sync%20System/v2.0/Script/DirectionSwitch.cs)** | 任意トリガー/小道具 | 物理ボタンやプロップ等から特定演出をワンクリックで起動するためのトリガースクリプト。 |
@@ -309,17 +327,90 @@ flowchart TD
 
 ---
 
+### 2.8 機能⑧：演者用操作端末 (Performer Portable UI & Auto-Return Trigger)
+
+* **機能の目的（ユースケース）**:
+  * 裏手のオペレーター（PA・照明スタッフ）が不在の公演や、スタッフも壇上に上がるワンマンライブ・即興ショーにおいて、演者自身がステージ上で自然な所作で演出の選択（予約）・即時発火・強制スタート（Force Launch）・緊急停止を行えるようにする。
+* **入力（Input）**:
+  * **トリガー**:
+    - 親機近接コライダーへの進入・離脱（`SSSPerformerProximityChecker.OnPlayerTriggerEnter / Exit`）
+    - 親機UIの演出ボタン押下（`OnSelectStandbyDirection(index)`）
+    - 子機リモコンの把持・トリガー操作（`SSSPerformerTrigger.OnPickupUseDown()` / `OnDrop()`）
+    - 壇上からの即時強制スタートボタン押下（`OnForceStartNowButtonClicked()`）
+    - 緊急停止の2ステップ安全トグル解除 ＆ 実行ボタン押下（`OnEmergencyStopButtonClicked()`）
+    - 親機の位置固定切り替え（`_positionLockToggle`）
+  * **データ形式**:
+    - `objectIndex` (`int`), `sessionId` (`int`), `ignoreThreshold` (`bool`), `ignorePerformerError` (`bool`)
+* **出力（Output）**:
+  * 演出の予約（`_standbyObjectIndex`）およびハイライト・「Next Cue」テキスト更新
+  * 親機Canvasの表示/非表示（演者接近時のみ表示、離脱時および上演中は完全非表示）
+  * 子機リモコンのホルスター自動スナップ帰還（`ReturnToHolster()`）
+  * `SSSCore` の Owner へ `[NetworkCallable]` RPC送信:
+    - `NetRequestStartFromPerformer(objectIndex, ignoreThreshold, ignorePerformerError)`
+    - `NetRequestForceLaunchNow(sessionId)`
+    - `NetRequestStopFromPerformer(sessionId)`
+* **想定している処理フロー**:
+  1. **親機の配置**: 演者が親機をステージ脇や手元など任意の場所にPickupして運び、`Position Lock` トグルをONにして固定する（`pickupable = false`）。
+  2. **接近と予約**: 演者が親機に近づく（1.8m以内）と自動的にCanvasが表示され、`StandbyPanel` で次に流したい演出ボタンを選択する（この時点では再生されず「次曲予約 Standby」として保持）。
+  3. **子機持ち出し**: 演者が親機のホルスターから子機リモコンをPickupし、ステージ中央の立ち位置へ持ち込む。演者が離れると親機Canvasは自動的に非表示となり、観客席からの視界や返しモニターを遮らない。
+  4. **発火と自動帰還**: 演者が曲振りの決めポーズやMCのタイミングで子機のトリガー（`Use`）を引く $\to$ `SSSCore` の Owner へ再生開始RPCが送信され、子機は自動的に親機のホルスター位置へスナップ帰還する。
+  5. **ロード中画面**: 親機に近づくと `LoadingPanel` が表示され、進捗ゲージ（`Loaded: X/Y`）、緊急時の「Force Start Now」ボタン、中止「Cancel」ボタンが操作可能。
+  6. **上演中画面と緊急停止**: 上演中に演者が親機に近づくと `PlayingPanel` が表示され、再生時間・プログレスバーとともに、誤タップ防止の「2ステップ安全ロック解除トグル ＋ EMERGENCY STOPボタン」が表示される。
+  7. **スマート・キュー（オートアドバンス）**: 演出が**最後まで正常完了した場合のみ**、UI並び順における「次の演出」へ自動的に予約が進む。ロード失敗によるAbortや手動Stopで中断した場合は**予約を変更せず同一曲を維持**し、即座にリトライできるようにする。
+* **異常系・エッジケースの扱い**:
+  * **非演者（観客）の不正操作防止**: `SSSCore.IsPerformer == false` のプレイヤーに対しては、親機・子機ともに `VRC_Pickup.pickupable = false` に固定され、親機Canvasも常時非表示・コライダー無効となる。
+  * **ステージエリア退出時の強制Drop**: 演者が親機や子機を持ったままステージ（`Performer Space`）から退出した場合、その瞬間に `VRC_Pickup.Drop()` が強制発火し、子機はホルスターへ帰還する。
+  * **完全イベント駆動（Update関数ゼロ）**: 定常的なフレーム負荷をゼロにするため、スクリプト内に `Update()` を一切持たず、コライダーTriggerイベントおよび `SSSCore` からのライフサイクルフック通知のみで駆動する。
+  * **システムオブジェクト誤登録防止 (Sanitize)**: `SSSCore` の演者専用オブジェクト切り替え対象から、演者用端末自身を自動除外。
+* **既存モジュールとの依存関係**:
+  * 参照/変更: `SSSCore`, `SSSUIController`, `SSSPerformerTrigger`, `SSSPerformerProximityChecker`, `VRC_Pickup`
+
+---
+
+### 2.9 機能⑨：Runtime演出手動ソート機能 (Runtime Manual D&D Sort)
+
+* **機能の目的（ユースケース）**:
+  * イベント当日の現場判断により、上演直前にセットリスト（演出順）を入れ替えたり、特定の演出を後回しにしたりする操作を、Unityエディタを開き直すことなくVRChatインスタンス内（Runtime）で直感的に行えるようにする。
+* **入力（Input）**:
+  * **トリガー**:
+    - メインUIのソートモード `Manual` トグルのON/OFF（`SSSUIController.OnSortToggleChanged`）
+    - ドラッグ用透明Sliderプロキシの操作（`OnDragSliderPointerDown`, `OnDragSliderPointerUp`, `OnDragSliderValueChanged`）
+    - 手動微調整用の各行「▲（1つ上へ）」「▼（1つ下へ）」ボタン押下
+  * **データ形式**:
+    - `int[] currentOrder` (初期順序配列), `int[] _workingOrder` (作業用順序配列)
+* **出力（Output）**:
+  * 下部手動ソートドロワー（`ManualSortDrawer`）の開閉（`SetActive(true / false)`）
+  * ドラッグ中のアイテムのLive Reflow（他行のスムーズな退避 `Mathf.Lerp` アニメーション）
+  * 確定順序のメインUI反映（`DirectionSW` ボタン群の `SiblingIndex` 一括更新）
+  * ネットワーク同期（全クライアントおよび演者用端末 `SSSPerformerUIController` のリスト順序・オートアドバンス順序へリアルタイム反映）
+* **想定している処理フロー**:
+  1. **ドロワー展開と順序引き継ぎ**: ユーザーがメインUIで `Manual` を選択すると、下部に手動ソートパネルが展開される。この際、**直前に表示されていた順序（例：名前順ソートの結果）をそのまま初期順序として引き継ぐ**ため、1曲だけ位置を微調整する運用が極めてスムーズに行える。
+  2. **VRレーザー ＆ Desktopマウス両対応のD&D機構**: UdonSharpで `IDragHandler` が直接利用できない制約を解決するため、ドラッグハンドル列に**透明なVertical Sliderプロキシ ＋ EventTrigger**を配置。ポインターの高さから掴んだ行を瞬時に特定し、VRコントローラーのレーザーポインターとDesktopマウスの双方で正確なD&Dを実現。
+  3. **ドラッグ中のフィードバック**: 掴まれた行はスケールがわずかに拡大（1.03倍）し、最前面描画＋ハイライト色に変化。元の位置には点線枠（`PlaceholderBar`）を表示。
+  4. **Live Reflow（滑らかな退避）**: 掴んだ行を上下に動かすと、境界を超えた瞬間に内部インデックスがスワップされ、他行が新しい目標Y座標へ向かって `Mathf.Lerp` でスッと滑らかにスライド移動する。
+  5. **エッジ・オートスクロール**: リストが長くスクロールビューを構成している場合、上下端15%の領域にポインターがある間、自動的にスクロールオフセットを滑らかに移動。
+  6. **ドロップ確定と全体同期**: トリガー（クリック）を離すと目標位置へスナップ収束し、確定した順序が `SSSUIController` に渡されて全参加者および演者用端末へ一括同期される。
+* **異常系・エッジケースの扱い**:
+  * **オンデマンド駆動（定常Update負荷ゼロ）**: 定常時は `this.enabled = false` でUpdateループが完全停止しており、ドラッグ開始からアニメーション収束完了（座標誤差0.5px未満）までの間だけ `enabled = true` になる。
+  * **上演中・ロード中の強制停止**: 上演開始またはロード待機に入った瞬間、ドラッグを強制キャンセルし `enabled = false` にロックすることで、上演中のアバターIK硬直や同期競合リスクを100%排除。
+  * **アロケーションフリー設計**: 配列や作業バッファはすべて初期化時に固定確保され、D&D操作中のGCスパイク（フレーム落ち）を完全防止。
+* **既存モジュールとの依存関係**:
+  * 参照/変更: `SSSUIController`, `SSSCore`, `SSSManualSortItem`, `SSSPerformerUIController`
+
+---
+
 ## 3. 技術的な制約・非機能要件 (Technical Constraints & Non-Functional Requirements)
 
 ### 3.1 パフォーマンス要件 (Performance Requirements)
 1. **VRフレームレート維持 (60FPS / 90FPS)**:
    - メインスレッド負荷を最小限に抑え、VR酔いやトラッキング飛びを防止する。
    - 演出ソート処理はメモリアロケーションを伴わない**非再帰インサーションソート**を採用し、GC（Garbage Collection）スパイクを完全抑止。
+   - Runtime手動ソートも**オンデマンド駆動（定常時Updateゼロ）**を採用。
 2. **動画シーク頻度・デコーダ負荷制限**:
    - 目標時間との差が `_VIDEO_SEEK_THRESHOLD` (5ms) 未満の場合はシークをスキップ。
    - 毎フレームシークを連打するとAVPro Videoがフリーズ・競合するため、単一シーク＋1秒後フォースシンクの2段階制御を採用。
 3. **低定常負荷（Event-Driven設計）**:
-   - 上演中以外の待機時は不要なUpdateループ処理を停止し、ワールドの軽量化を徹底。
+   - 上演中以外の待機時は不要なUpdateループ処理を停止し、ワールドの軽量化を徹底。演者用端末（`SSSPerformerUIController`）もUpdate関数ゼロで設計。
 
 ---
 
@@ -337,9 +428,17 @@ flowchart TD
 
 ### 3.3 今後の拡張予定 (Future Roadmap)
 - **演者用操作端末(UI)**:
-  - スタッフ無しでも公演ができるように演者がステージ上で演出再生、設定変更が可能なUIを計画
+  - スタッフ無しでも公演ができるように演者がステージ上で演出再生、設定変更が可能なUIを実装完了（2.8節参照）。さらなる所作の自然化や視認性向上を継続計画。
 - **Runtime上演出リスト入れ替え機能**:
-  - Editor上のみならずRuntime上でも演出リストの順番を手動で入れ替えることのできるUI機能計画
+  - Editor上のみならずRuntime上でも演出リストの順番を手動で入れ替えることのできるUI機能を実装完了（2.9節参照）。
+- **UIの改善**:
+  - UIの操作時アニメーション等はまだなく、使用感を向上させる改良を計画
+- **Animator / StateMachine 演出への対応**:
+  - 現在の `PlayableDirector` (Timeline) に加え、Animatorのステート時間追従にも対応予定。
+- **3D音響・空間距離遅延補正（Acoustic Delay Compensation）**:
+  - 巨大なスタジアムワールド等において、ステージと客席最後列との物理的な音速遅延（約340m/s）を計算し、客席位置に応じたローカル音響ディレイを付加する機能。
+- **外部OSC / DMX 照明制御連携**:
+  - VRChat外部の照明コントローラーやリアルライブ演出卓からのOSC信号を受信し、SSSのライフサイクルと同期させる拡張。
 
 ---
 
@@ -349,7 +448,7 @@ flowchart TD
 - [ ] アイデア・要件定義
 - [ ] 設計中
 - [ ] プロトタイプ実装中
-- [x] **ボトルネック・バグ解消 / 実環境検証中** (Gitブランチ: `Improvement-of-Delay-Calculation-System`)
+- [x] **ボトルネック・バグ解消 / 実環境検証中** (Gitブランチ: `v2.0-Update`)
 
 ---
 
@@ -358,6 +457,8 @@ flowchart TD
 | 評価項目 | 現在採用しているアプローチ | 過去のアプローチ | 採用理由・トレードオフ |
 | :--- | :--- | :--- | :--- |
 | **遅延計測方式** | **双方向三角測量法 (Bidirectional Triangulation)**<br>全ペア双方向Pingの中央値から各端末の片道遅延を幾何学的に特定 | **定数時間遅延**<br>経験則に基づく定数時間(0.6s)のオフセットを設ける | (ここに詳細を記述) |
+| **演者用端末設計** | **親子分離型 ＋ Owner委譲RPC方式**<br>半設置型親機（接近時のみ表示）＋自動帰還型小型リモコン子機。操作はSSSCoreのOwnerへRPC委譲し完全イベント駆動（Updateゼロ） | **単一端末自律同期方式**<br>端末自身がSynced変数を持ちOwner権限を奪取して自律制御 | メインUIとのOwner競合を100%防止し、演者の視界・返しモニター遮りをゼロにし、定常負荷を抑えるため。 |
+| **Runtime手動ソート** | **透明Sliderプロキシ ＋ オンデマンドLerp**<br>VRレーザー/Desktop両対応の透明Slider座標取得 ＋ 非ドラッグ時はUpdateゼロ | **IDragHandler直接利用**<br>標準のUnity UI EventSystemを利用 | UdonSharpにおけるVRコントローラーのPointerEventData取得制約を突破し、定常Update負荷をゼロにするため。 |
 
 ---
 
@@ -399,6 +500,9 @@ flowchart TD
 | `NetReceiveLatencyPing` | `int senderId, int sendServerTime` | All | Pingパケットを受信し、片道伝搬時間を計測・履歴記録。 |
 | `NetReceiveLatencyRecord`| `int senderId, int receiverId, int delayMs` | All | 計測されたペア間遅延を他クライアントへ中継共有。 |
 | `NetUpdatePerformerState`| `int playerId, bool isPerformer` | All | プレイヤーの演者ステータス変更を全体共有。 |
+| `NetRequestStartFromPerformer` | `int objectIndex, bool ignoreThreshold, bool ignorePerformerError` | Owner | 演者端末からの再生開始リクエストを受理し一元処理。 |
+| `NetRequestForceLaunchNow` | `int sessionId` | Owner | 演者端末からの即時強制スタートリクエストを受理。 |
+| `NetRequestStopFromPerformer` | `int sessionId` | Owner | 演者端末からの緊急停止・キャンセルリクエストを受理。 |
 
 ---
 
