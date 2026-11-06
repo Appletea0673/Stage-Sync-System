@@ -196,23 +196,33 @@ namespace AppleteaSystems.StageSyncSystem
             };
         }
 
-        internal static Component GetYamaPlayerController()
-        {
 #if SSS_YAMAPLAYER
+        internal static Controller GetYamaPlayerController()
+        {
             Controller[] controllers = FindObjectsByType<Controller>(FindObjectsInactive.Include, FindObjectsSortMode.None);
             if (controllers != null && controllers.Length > 0) return controllers[0];
-#endif
             return null;
         }
-
-        internal static Component GetIwasyncCore()
+#else
+        internal static Component GetYamaPlayerController()
         {
+            return null;
+        }
+#endif
+
 #if SSS_IWASYNC
+        internal static VideoCore GetIwasyncCore()
+        {
             VideoCore[] coreTemp = FindObjectsByType<VideoCore>(FindObjectsInactive.Include, FindObjectsSortMode.None);
             if (coreTemp != null && coreTemp.Length > 0) return coreTemp[0];
-#endif
             return null;
         }
+#else
+        internal static Component GetIwasyncCore()
+        {
+            return null;
+        }
+#endif
 
         internal static SSSCore GetSSSCore(DirectionController dirController = null)
         {
