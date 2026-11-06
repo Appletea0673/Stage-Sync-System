@@ -2,7 +2,7 @@
 ![Stage Sync System Logo](Assets/Appletea's%20Item/Stage%20Sync%20System/v2.0/Texture/Stage%20Sync%20System%20Logo%20v1.5.png)
 
 > [!NOTE]
-> システム全体の詳細な内部設計・遅延計算アルゴリズムの仕様については、Root直下の **[DOCUMENTATION.md](DOCUMENTATION.md)** を参照してください。
+> システム全体の詳細な内部設計・遅延計算アルゴリズムの仕様については、**[DOCUMENTATION.md](DOCUMENTATION.md)** を参照してください。
 
 ## 概要
 イベント等でパフォーマンスをする人向けのVRChatワールドギミックです。
