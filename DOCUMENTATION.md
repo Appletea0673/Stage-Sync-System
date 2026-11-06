@@ -8,11 +8,11 @@
 
 1. [システムの全体像と前提条件 (System Overview & Prerequisites)](#1-システムの全体像と前提条件-system-overview--prerequisites)
    - [1.1 システムの概要と開発目的](#11-システムの概要と開発目的)
-   - [1.2 技術スタック・動作環境・インフラ](#12-技術スタック動作環境インフラ)
+   - [1.2 技術スタック・動作環境](#12-技術スタック動作環境)
    - [1.3 全体アーキテクチャ（エンドツーエンドのデータの流れ）](#13-全体アーキテクチャエンドツーエンドのデータの流れ)
    - [1.4 主要コンポーネント一覧と責務](#14-主要コンポーネント一覧と責務)
 2. [議論対象機能の詳細仕様 (Feature Specifications & I/O)](#2-議論対象機能の詳細仕様-feature-specifications--io)
-   - [2.1 機能①：動的通信遅延計測・オフセット制御 (Danceモード相当)](#21-機能動的通信遅延計測オフセット制御-danceモード相当)
+   - [2.1 機能①：動的通信遅延計測・オフセット制御](#21-機能動的通信遅延計測オフセット制御)
    - [2.2 機能②：全員動画事前ロード待機・同期発火 (Synchronized Pre-loading)](#22-機能全員動画事前ロード待機同期発火-synchronized-pre-loading)
    - [2.3 機能③：Timeline演出追従同期 (Timeline Drift Sync)](#23-機能timeline演出追従同期-timeline-drift-sync)
    - [2.4 機能④：インワールドUI・ソート・進行不能回避 (SSSUIController)](#24-機能インワールドuiソート進行不能回避-sssuicontroller)
@@ -46,7 +46,7 @@
 ## 1. システムの全体像と前提条件 (System Overview & Prerequisites)
 
 ### 1.1 システムの概要と開発目的
-**Stage Sync System (SSS)** は、VRChat上の音楽ライブ、ダンスショー、舞台演劇等のイベントにおいて、**演者（Performer）と観客（Audience）の間で音源、映像（動画プレイヤー）、演出（Timeline / PlayableDirector）を高精度に完全同期**させ、さらに演者と観客間の通信遅延やクライアント描画・再生遅延（タイムラグ）を相殺・補正するための高度なワールドギミックシステムです。
+**Stage Sync System (SSS)** は、VRChat上の音楽ライブ、ダンスショー、舞台演劇等のイベントにおいて、**演者（Performer）と観客（Audience）の間で音源、映像（動画プレイヤー）、演出（Timeline / PlayableDirector）を高精度に完全同期**させ、さらに演者と観客間の通信遅延やクライアント描画・再生遅延（タイムラグ）を吸収・補正するための高度なワールドギミックシステムです。
 
 #### 解決する課題
 1. **演者と観客間のモーション通信遅延（IK補間ラグ）**:
@@ -58,15 +58,15 @@
 
 ---
 
-### 1.2 技術スタック・動作環境・インフラ
+### 1.2 技術スタック・動作環境
 
 | 区分 | 技術項目 | バージョン / 仕様詳細 |
 | :--- | :--- | :--- |
 | **開発言語** | C# (UdonSharp) | UdonSharp 1.x (Unity C# サブセット) |
 | **ゲームエンジン** | Unity | 2022.3.22f1 |
 | **プラットフォーム / FW** | VRChat World SDK | VRCSDK3-WORLD 3.5.0 以降 |
-| **実行環境 / インフラ** | クライアント端末 | Windows PC (VR / Desktop) |
-| | 通信インフラ | VRChat / Photon Cloud リレーサーバー (Photon Realtime) |
+| **実行環境** | クライアント端末 | Windows PC (VR / Desktop) |
+| | 通信ネットワーク | VRChat / Photon Cloud リレーサーバー (Photon Realtime) |
 | **関連ライブラリ / 外部ツール** | 動画プレイヤー | **YamaPlayer** (`Yamadev.YamaStream.Controller`, AVPro Video ベース)<br>**iwaSync3** (`HoshinoLabs.IwaSync3.Udon.VideoCore`, AVPro / Unity Video) |
 | | 演出エンジン | Unity Playables API (`UnityEngine.Playables.PlayableDirector`) |
 | | データコンテナ | VRChat Data Token (`VRC.SDK3.Data.DataDictionary`, `DataList`) |
@@ -83,11 +83,11 @@ flowchart TD
         User["オペレーター / 観客"] -->|ボタン押下 / Interact| UI["SSSUIController / DirectionSwitch"]
         User -->|D&D並び替え| Sorter["SSSRuntimeManualSorter (手動ソート)"]
         Sorter -->|順序確定| UI
-        Area["演者"] -->|コライダー侵入/退出| PC["PerformerChecker (ステージコライダー)"]
-        OpArea["操作者"] -->|近接侵入/退出| UOC["UIOperatorChecker (UI保護コライダー)"]
+        Area["演者"] -->|コライダー侵入 / 退出| PC["PerformerChecker (ステージコライダー)"]
+        OpArea["操作者"] -->|近接侵入 / 退出| UOC["UIOperatorChecker (UI保護コライダー)"]
         
         subgraph PerformerTerminal["演者用操作端末 (Performer Portable UI)"]
-            PerfProximity["SSSPerformerProximityChecker (近接検知)"] -->|表示/Collider切替| PerfParent["SSSPerformerUIController (親機)"]
+            PerfProximity["SSSPerformerProximityChecker (近接検知)"] -->|表示・Collider切替| PerfParent["SSSPerformerUIController (親機)"]
             PerfActor["演者 (壇上)"] -->|予約選択 / Force Start / 緊急停止| PerfParent
             PerfActor -->|子機Pickup持ち込み & Use発火| PerfChild["SSSPerformerTrigger (子機リモコン)"]
             PerfChild -->|発火通知 & 自動帰還| PerfParent
@@ -95,20 +95,20 @@ flowchart TD
     end
 
     subgraph CoreLogic["2. コア制御・遅延計算層 (SSSCore)"]
-        UI -->|StartHandling(index)| SSS["SSSCore (Owner)"]
-        PerfParent -->|NetRequestStartFromPerformer / Force / Stop| SSS
-        PC -->|IsPerformer = true/false| SSS
-        UOC -->|SetOperatorInteractable| UI
+        UI -->|演出再生要求| SSS["SSSCore (Owner)"]
+        PerfParent -->|再生開始・強制上演・停止要求| SSS
+        PC -->|演者判定フラグ通知| SSS
+        UOC -->|操作許可フラグ切替| UI
 
         subgraph LatencyCalc["双方向遅延計測 (Bidirectional Triangulation)"]
             SSS <-->|NetworkCallable Ping| Peer["他クライアント SSSCore"]
-            SSS -->|時計ズレδ相殺 & 中央値フィルタ| NetDelay["計算された NetworkDelay"]
+            SSS -->|時計ズレδ吸収 & 中央値フィルタ| NetDelay["計算された NetworkDelay"]
         end
 
         subgraph Preloading["全員Ready待機・合否判定"]
             SSS -->|NetOnBeginLoading| AllClients["全参加者クライアント"]
             AllClients -->|NetNotifyPlayerLoadStatus| SSS
-            SSS -->|評価: 演者合格 かつ 失敗率<50%| Launch["NetStartStagePlayback 発火"]
+            SSS -->|ロード成功・失敗率判定| Launch["NetStartStagePlayback 発火"]
         end
     end
 
@@ -118,9 +118,9 @@ flowchart TD
     end
 
     subgraph PlaybackExecution["4. 再生・演出実行層"]
-        YB -->|PlayTrack / LocalDelay / Seek| Yama["YamaPlayer Controller"]
-        IB -->|PlayURL / offsetTime / time| Iwa["iwaSync3 VideoCore"]
-        SSS -->|毎フレーム追従 (SyncAccuracy=40ms)| Dir["DirectionObject (PlayableDirector)"]
+        YB -->|再生・遅延・シーク制御| Yama["YamaPlayer Controller"]
+        IB -->|再生・遅延・シーク制御| Iwa["iwaSync3 VideoCore"]
+        SSS -->|毎フレーム時間追従| Dir["DirectionObject (PlayableDirector)"]
         SSS -->|演者専用表示切り替え| PerfObjs["Performer Objects (返しモニター等)"]
         SSS -->|進捗・状態通知| PerfParent
     end
@@ -132,29 +132,29 @@ flowchart TD
 
 | コンポーネント | 配置オブジェクト | 責務・役割 |
 | :--- | :--- | :--- |
-| **[`SSSCore`](file:///D:/Development/Unity%20Terminal/VirtualReality/2022_3.22f1/Develop/Stage-Sync-System/Assets/Appletea's%20Item/Stage%20Sync%20System/v2.0/Script/SSSCore.cs)** | `Core` | システム中核。双方向遅延計測、オフセット計算、全員ロード待機判定、動画・Timeline制御、上演ライフサイクル統括 |
-| **[`SSSUIController`](file:///D:/Development/Unity%20Terminal/VirtualReality/2022_3.22f1/Develop/Stage-Sync-System/Assets/Appletea's%20Item/Stage%20Sync%20System/v2.0/Script/SSSUIController.cs)** | `UI` | インワールド操作盤。演出リスト管理、ソートモード切替、進行不能回避（Force Launch）設定、ステータス表示（人数・色・ランプ） |
-| **[`SSSPerformerUIController`](file:///D:/Development/Unity%20Terminal/VirtualReality/2022_3.22f1/Develop/Stage-Sync-System/Assets/Appletea's%20Item/Stage%20Sync%20System/v2.0/Script/SSSPerformerUIController.cs)** | `Performer Portable UI` | 演者用端末の親機UI制御。演出予約（Standby）、オートアドバンス計算、Pickupロック、状態別画面遷移、`SSSCore` へのRPC送信 |
-| **[`SSSPerformerTrigger`](file:///D:/Development/Unity%20Terminal/VirtualReality/2022_3.22f1/Develop/Stage-Sync-System/Assets/Appletea's%20Item/Stage%20Sync%20System/v2.0/Script/SSSPerformerTrigger.cs)** | `PerformerTrigger` | 演者用端末の子機トリガー。立ち位置へ持ち込み `Use` で予約演出を発火。発火後または手放した瞬間にホルスターへ自動帰還 |
-| **[`SSSPerformerProximityChecker`](file:///D:/Development/Unity%20Terminal/VirtualReality/2022_3.22f1/Develop/Stage-Sync-System/Assets/Appletea's%20Item/Stage%20Sync%20System/v2.0/Script/SSSPerformerProximityChecker.cs)** | `ProximityChecker` | 演者端末の近接検知（1.8m）。演者接近時のみ親機Canvasを表示・コライダー有効化し、離脱時は完全非表示化 |
-| **[`SSSRuntimeManualSorter`](file:///D:/Development/Unity%20Terminal/VirtualReality/2022_3.22f1/Develop/Stage-Sync-System/Assets/Appletea's%20Item/Stage%20Sync%20System/v2.0/Script/SSSRuntimeManualSorter.cs)** | `ManualSortDrawer` | メインUI下部のRuntime手動ソートドロワー制御。VR/Desktop対応D&D、オンデマンドLerpアニメーション、順序同期 |
-| **[`SSSManualSortItem`](file:///D:/Development/Unity%20Terminal/VirtualReality/2022_3.22f1/Develop/Stage-Sync-System/Assets/Appletea's%20Item/Stage%20Sync%20System/v2.0/Script/SSSManualSortItem.cs)** | `SortItem_X` | 手動ソートドロワー内の各演出行アイテム。タイトル表示、ドラッグ中ハイライト、▲/▼手動移動ボタンの中継 |
-| **[`DirectionController`](file:///D:/Development/Unity%20Terminal/VirtualReality/2022_3.22f1/Develop/Stage-Sync-System/Assets/Appletea's%20Item/Stage%20Sync%20System/v2.0/Script/DirectionController.cs)** | `Stage Sync System (Root)` | システム最上位コンポーネント。エディタ拡張の基点となり、各コンポーネント間の参照を自動統合 |
-| **[`DirectionObject`](file:///D:/Development/Unity%20Terminal/VirtualReality/2022_3.22f1/Develop/Stage-Sync-System/Assets/Appletea's%20Item/Stage%20Sync%20System/v2.0/Script/DirectionObject.cs)** | 各演出オブジェクト | シーン上の各演出（`PlayableDirector`）にアタッチ。演出名、動画URL、演者への再生可否フラグを保持 |
-| **[`DirectionSwitch`](file:///D:/Development/Unity%20Terminal/VirtualReality/2022_3.22f1/Develop/Stage-Sync-System/Assets/Appletea's%20Item/Stage%20Sync%20System/v2.0/Script/DirectionSwitch.cs)** | 任意トリガー/小道具 | 物理ボタンやプロップ等から特定演出をワンクリックで起動するためのトリガースクリプト |
-| **[`PerformerChecker`](file:///D:/Development/Unity%20Terminal/VirtualReality/2022_3.22f1/Develop/Stage-Sync-System/Assets/Appletea's%20Item/Stage%20Sync%20System/v2.0/Script/PerformerChecker.cs)** | `Performer Space` | ステージ領域のコライダー。進入プレイヤーをローカルで演者と判定し、`SSSCore` へ通知 |
-| **[`UIOperatorChecker`](file:///D:/Development/Unity%20Terminal/VirtualReality/2022_3.22f1/Develop/Stage-Sync-System/Assets/Appletea's%20Item/Stage%20Sync%20System/v2.0/Script/UIOperatorChecker.cs)** | `Control Protecter` | 操作盤周囲のコライダー。枠外からの遠隔Raycast誤操作をコライダー無効化で完全に遮断 |
-| **[`SSSYamaBridge`](file:///D:/Development/Unity%20Terminal/VirtualReality/2022_3.22f1/Develop/Stage-Sync-System/Assets/Appletea's%20Item/Stage%20Sync%20System/v2.0/Script/SSSYamaBridge.cs)** | `Core/Bridge` | YamaPlayerの `Listener` を継承し、動画準備完了・開始・エラー・停止イベントを `SSSCore` へ中継 |
-| **[`SSSIwaSyncBridge`](file:///D:/Development/Unity%20Terminal/VirtualReality/2022_3.22f1/Develop/Stage-Sync-System/Assets/Appletea's%20Item/Stage%20Sync%20System/v2.0/Script/SSSIwaSyncBridge.cs)** | `Core/Bridge` | iwaSync3の `VideoCoreEventListener` を継承し、各動画イベントを `SSSCore` へ中継 |
+| **[`SSSCore`](Assets/Appletea's%20Item/Stage%20Sync%20System/v2.0/Script/SSSCore.cs)** | `Core` | システム中核。双方向遅延計測、オフセット計算、全員ロード待機判定、動画・Timeline制御、上演ライフサイクル統括 |
+| **[`SSSUIController`](Assets/Appletea's%20Item/Stage%20Sync%20System/v2.0/Script/SSSUIController.cs)** | `UI` | インワールド操作盤。演出リスト管理、ソートモード切替、進行不能回避（Force Launch）設定、ステータス表示（人数・色・ランプ） |
+| **[`SSSPerformerUIController`](Assets/Appletea's%20Item/Stage%20Sync%20System/v2.0/Script/SSSPerformerUIController.cs)** | `Performer Portable UI` | 演者用端末の親機UI制御。演出予約（Standby）、オートアドバンス計算、Pickupロック、状態別画面遷移、`SSSCore` へのRPC送信 |
+| **[`SSSPerformerTrigger`](Assets/Appletea's%20Item/Stage%20Sync%20System/v2.0/Script/SSSPerformerTrigger.cs)** | `PerformerTrigger` | 演者用端末の子機トリガー。立ち位置へ持ち込み `Use` で予約演出を発火。発火後または手放した瞬間にホルスターへ自動帰還 |
+| **[`SSSPerformerProximityChecker`](Assets/Appletea's%20Item/Stage%20Sync%20System/v2.0/Script/SSSPerformerProximityChecker.cs)** | `ProximityChecker` | 演者端末の近接検知（1.8m）。演者接近時のみ親機Canvasを表示・コライダー有効化し、離脱時は完全非表示化 |
+| **[`SSSRuntimeManualSorter`](Assets/Appletea's%20Item/Stage%20Sync%20System/v2.0/Script/SSSRuntimeManualSorter.cs)** | `ManualSortDrawer` | メインUI下部のRuntime手動ソートドロワー制御。VR/Desktop対応D&D、オンデマンドLerpアニメーション、順序同期 |
+| **[`SSSManualSortItem`](Assets/Appletea's%20Item/Stage%20Sync%20System/v2.0/Script/SSSManualSortItem.cs)** | `SortItem_X` | 手動ソートドロワー内の各演出行アイテム。タイトル表示、ドラッグ中ハイライト、▲/▼手動移動ボタンの中継 |
+| **[`DirectionController`](Assets/Appletea's%20Item/Stage%20Sync%20System/v2.0/Script/DirectionController.cs)** | `Stage Sync System (Root)` | システム最上位コンポーネント。エディタ拡張の基点となり、各コンポーネント間の参照を自動統合 |
+| **[`DirectionObject`](Assets/Appletea's%20Item/Stage%20Sync%20System/v2.0/Script/DirectionObject.cs)** | 各演出オブジェクト | シーン上の各演出（`PlayableDirector`）にアタッチ。演出名、動画URL、演者への再生可否フラグを保持 |
+| **[`DirectionSwitch`](Assets/Appletea's%20Item/Stage%20Sync%20System/v2.0/Script/DirectionSwitch.cs)** | 任意トリガー/小道具 | 物理ボタンやプロップ等から特定演出をワンクリックで起動するためのトリガースクリプト |
+| **[`PerformerChecker`](Assets/Appletea's%20Item/Stage%20Sync%20System/v2.0/Script/PerformerChecker.cs)** | `Performer Space` | ステージ領域のコライダー。進入プレイヤーをローカルで演者と判定し、`SSSCore` へ通知 |
+| **[`UIOperatorChecker`](Assets/Appletea's%20Item/Stage%20Sync%20System/v2.0/Script/UIOperatorChecker.cs)** | `Control Protecter` | 操作盤周囲のコライダー。枠外からの遠隔Raycast誤操作をコライダー無効化で完全に遮断 |
+| **[`SSSYamaBridge`](Assets/Appletea's%20Item/Stage%20Sync%20System/v2.0/Script/SSSYamaBridge.cs)** | `Core/Bridge` | YamaPlayerの `Listener` を継承し、動画準備完了・開始・エラー・停止イベントを `SSSCore` へ中継 |
+| **[`SSSIwaSyncBridge`](Assets/Appletea's%20Item/Stage%20Sync%20System/v2.0/Script/SSSIwaSyncBridge.cs)** | `Core/Bridge` | iwaSync3の `VideoCoreEventListener` を継承し、各動画イベントを `SSSCore` へ中継 |
 
 ---
 
 ## 2. 議論対象機能の詳細仕様 (Feature Specifications & I/O)
 
-### 2.1 機能①：動的通信遅延計測・オフセット制御 (Danceモード相当)
+### 2.1 機能①：動的通信遅延計測・オフセット制御
 
 * **機能の目的（ユースケース）**: 
-  * 演者と観客間の通信往復遅延とVRChatアバターIK補間遅延（約260ms）をミリ秒単位で相殺し、観客から見て演者のダンスの動きと音源・映像が完全に一致した状態で上演を行う
+  * 演者と観客間の通信往復遅延とVRChatアバターIK補間遅延（約260ms）をミリ秒単位で吸収し、観客から見て演者のダンスの動きと音源・映像を数十ミリ秒単位で調整した状態で上演を行う
 * **入力（Input）**: 
   * **トリガー**: 
     - 演者がステージエリアへ進入した瞬間（`PerformerChecker.OnPlayerTriggerEnter`）
@@ -171,7 +171,7 @@ flowchart TD
 * **想定している処理フロー**: 
   1. インスタンス内の選出ノード（Beacon：演者最優先、上位3名）が `SendLatencyPing` を全クライアントへ送信
   2. 受信側がサーバー時刻差 $rawDelay = ServerTime - sendServerTime$ を計算。直近3サンプル最小値フィルタでスパイクを除去
-  3. 逆方向の計測値との平均を取り、端末間の時計ズレ（クロックスキュー $\delta$）を完全相殺:
+  3. 逆方向の計測値との平均を取り、端末間の時計ズレ（クロックスキュー $\delta$）を吸収:
      $$d_{undirected}(A, B) = \frac{d(A \to B) + d(B \to A)}{2}$$
   4. **3人以上のインスタンス**: 全三角形候補から三角測量値を算出し、中央値（Median）を抽出:
      $$\text{Candidate}(X, Y) = \max\left(0, \frac{d(Local, X) + d(Local, Y) - d(X, Y)}{2}\right)$$
@@ -510,7 +510,7 @@ string undirectedKey = GetPairKey(senderId, receiverId);
 string dirKey = $"{senderId}_{receiverId}";
 ```
 
-- `_pairDelays` (`DataDictionary`): 時計ズレ $\delta$ 相殺済みの双方向遅延ミリ秒（Key: `undirectedKey`, Value: `int`）
+- `_pairDelays` (`DataDictionary`): 時計ズレ $\delta$ 吸収済みの双方向遅延ミリ秒（Key: `undirectedKey`, Value: `int`）
 - `_directedPairDelays` (`DataDictionary`): 直近3サンプル最小値フィルタ適用済みの片道遅延（Key: `dirKey`, Value: `int`）
 - `_directedPairPrev1` / `Prev2` (`DataDictionary`): 最小値フィルタ用履歴バッファ
 - `_performerPlayerIds` (`DataList`): 現在ステージ上にいる演者の `playerId` リスト
@@ -521,10 +521,10 @@ string dirKey = $"{senderId}_{receiverId}";
 
 ### 5.4 主要アルゴリズムのコード抜粋
 
-#### 1. 双方向三角測量・中央値フィルタによる `NetworkDelay` 算出 ([`SSSCore.cs`](file:///D:/Development/Unity%20Terminal/VirtualReality/2022_3.22f1/Develop/Stage-Sync-System/Assets/Appletea's%20Item/Stage%20Sync%20System/v2.0/Script/SSSCore.cs#L1621-L1697))
+#### 1. 双方向三角測量・中央値フィルタによる `NetworkDelay` 算出 ([`SSSCore.cs`](Assets/Appletea's%20Item/Stage%20Sync%20System/v2.0/Script/SSSCore.cs#L1621-L1697))
 
 ```csharp
-// 3人以上での双方向三角測量（クロックスキューδ相殺済みペア優先 & 中央値採用）
+// 3人以上での双方向三角測量（クロックスキューδ吸収済みペア優先 & 中央値採用）
 for (int x = keyCount - 1; x >= 0; x--)
 {
     for (int y = x - 1; y >= 0; y--)
@@ -560,7 +560,7 @@ if (biAllCount > 0)
 }
 ```
 
-#### 2. AVProデコード停止ラグ先読み補正シーク ([`SSSCore.cs`](file:///D:/Development/Unity%20Terminal/VirtualReality/2022_3.22f1/Develop/Stage-Sync-System/Assets/Appletea's%20Item/Stage%20Sync%20System/v2.0/Script/SSSCore.cs#L2178-L2218))
+#### 2. AVProデコード停止ラグ先読み補正シーク ([`SSSCore.cs`](Assets/Appletea's%20Item/Stage%20Sync%20System/v2.0/Script/SSSCore.cs#L2178-L2218))
 
 ```csharp
 // 目標時間との差が5ms以上の場合のみシークを実行
@@ -582,6 +582,7 @@ if (Mathf.Abs(YamaPlayer_controller.VideoTime - targetTime) >= _VIDEO_SEEK_THRES
 ### 6.1 StageSyncSystem_Editor カスタムインスペクター
 Unityエディタ上で `Stage Sync System` を選択すると専用GUIが表示される
 - **プレイヤー連携ステータス**: YamaPlayer / iwaSync3 の存在を検知し、「Linked / Non-linked」をグラフィカルに表示
+- **パラメータ設定 (Manual Parameters)**: `Core` を直接開くことなく、ルートのInspector上で基本システム遅延（ms）、フォールバック遅延（ms）、同期許容誤差（秒）、ロード待機タイムアウト（秒）、上演中断エラー率閾値（%）の編集およびデフォルトリセットが可能
 - **演出一覧ソート**: 演出名昇順・降順、GameObject名順、Hierarchy順のワンクリックソート
 - **直感的手動並び替え**: `ReorderableList` と「▲」「▼」ボタンによる並び替え
 
@@ -602,4 +603,5 @@ Unityエディタ上で `Stage Sync System` を選択すると専用GUIが表示
 2. **エリア調整**: `UI` を操作位置へ、`Performer Space` をステージ範囲へ配置（配置後、MeshRendererを無効化）
 3. **動画プレイヤー配置**: YamaPlayer または iwaSync3 を配置し、インスペクターで「Linked」を確認
 4. **演出設定**: 演出オブジェクト（`PlayableDirector` 付属）に `DirectionObject` をアタッチし、演出名・動画URLを設定
-5. **本番運用**: 演者がステージに立ち、UIの `Performer Status` が `Standby`（青ランプ点灯）になったことを確認して演出ボタンを押下
+5. **パラメータ調整（任意）**: `Stage Sync System` のルートを選択し、Inspectorの「パラメータ設定 (Manual Parameters)」から基本システム遅延、タイムアウト秒数、上演中断エラー率閾値（%）などを設定（必要に応じて「デフォルトに戻す」で初期化可能）
+6. **本番運用**: 演者がステージに立ち、UIの `Performer Status` が `Standby`（青ランプ点灯）になったことを確認して演出ボタンを押下
