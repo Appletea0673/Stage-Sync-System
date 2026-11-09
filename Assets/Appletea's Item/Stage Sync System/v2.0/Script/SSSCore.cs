@@ -111,6 +111,7 @@ namespace AppleteaSystems.StageSyncSystem
         bool _isPerformer = false;
         bool _isInsidePerformerArea = false;
         const uint _MODE_VIDEO = 0x00000010;
+        const uint _MODE_STREAM = 0x00000020;
         const float _VRC_VIDEO_LOAD_COOLDOWN = 5.25f;
         const float _VIDEO_SEEK_THRESHOLD = 0.005f;
         const float _AVPRO_SEEK_LAG_COMPENSATION = 0.034f;
@@ -126,6 +127,7 @@ namespace AppleteaSystems.StageSyncSystem
         int _pendingLoadSessionId = -1;
         bool _isWaitingForCooldownLoad = false;
         bool _isInternalVideoStop = false;
+        bool _pendingForceLaunchWhenOwnerReady = false;
 
         // Ready & Error Tracking (Owner / All)
         DataList _expectedPlayerIds = new DataList();
@@ -601,11 +603,11 @@ namespace AppleteaSystems.StageSyncSystem
                 }
                 else if (!IsVideoPlayerPaused())
                 {
-                    float videoTime = GetCurrentVideoTime();
+                    float refTime = _stageStartServerTime != 0 ? GetTargetStageVideoTime() : GetCurrentVideoTime();
                     float timelineTime = (float)currentDir.playableDirector.time;
-                    if (Mathf.Abs(timelineTime - videoTime) >= SyncAccuracy)
+                    if (Mathf.Abs(timelineTime - refTime) >= SyncAccuracy)
                     {
-                        currentDir.playableDirector.time = videoTime;
+                        currentDir.playableDirector.time = refTime;
                     }
                 }
             }
@@ -669,10 +671,8 @@ namespace AppleteaSystems.StageSyncSystem
                 if (IsUsingIwaSync())
                 {
                     // IwaSyncではOnVideoReady時点ではisPlayingがfalseであり動画ストリームの再生準備が未完了。
-                    // ここでReady報告を行うと、新動画の準備完了前に上演が開始され、
-                    // 旧動画の残滓再生や頭欠け・途中再生（5秒スキップ）の原因となる。
-                    // 確実に再生準備が整うのはOnVideoStartのため、ここではPause状態を整えるのみにとどめる。
-                    PauseLocalVideoPlayerAtZero();
+                    // またyt-dlpによる新URL解決中は旧ストリームのPrepareCompletedで発火する場合があるため、
+                    // OnVideoStartが発火するまでPauseやReady報告は一切行わない。
                     return;
                 }
 #endif
@@ -700,11 +700,21 @@ namespace AppleteaSystems.StageSyncSystem
 
             if (_isStagePlaying)
             {
+#if SSS_IWASYNC
+                if (IsUsingIwaSync() && Iwasync_core.isOwner && _stageStartServerTime != 0)
+                {
+                    // VideoCore.OnVideoStart() 内で _clockTime が現在時刻に上書きされ SyncTimePeriodic が予約されるため、
+                    // 直ちに上演開始サーバー時刻へ復元し、約9.2秒後の SyncTimePeriodic によるシークバーのロールバックを防止する
+                    Iwasync_core.clockTime = _stageStartServerTime;
+                    Iwasync_core.RequestSerialization();
+                }
+#endif
                 RestoreVideoPlayerVolume();
                 ResumeLocalVideoPlayer();
                 ApplyOffset();
                 SeekLocalVideoToCurrentStageTime();
                 SyncActiveDirection(true);
+                SyncTimelineToTargetStageTime();
                 SendCustomEventDelayedSeconds(nameof(DelayedForceSync), 1.0f);
             }
         }
@@ -722,7 +732,7 @@ namespace AppleteaSystems.StageSyncSystem
                 DirectionObject currentDir = _directions[_playingObjectIndex];
                 if (currentDir != null && currentDir.gameObject.activeSelf)
                 {
-                    currentDir.playableDirector.time = GetCurrentVideoTime();
+                    currentDir.playableDirector.time = _stageStartServerTime != 0 ? GetTargetStageVideoTime() : GetCurrentVideoTime();
                     currentDir.playableDirector.Play();
                 }
                 SendCustomEventDelayedSeconds(nameof(DelayedForceSync), 1.0f);
@@ -804,7 +814,7 @@ namespace AppleteaSystems.StageSyncSystem
                 DirectionObject currentDir = _directions[_playingObjectIndex];
                 if (currentDir != null && currentDir.gameObject.activeSelf)
                 {
-                    currentDir.playableDirector.time = GetCurrentVideoTime();
+                    currentDir.playableDirector.time = _stageStartServerTime != 0 ? GetTargetStageVideoTime() : GetCurrentVideoTime();
                     currentDir.playableDirector.Play();
                 }
                 SendCustomEventDelayedSeconds(nameof(DelayedForceSync), 1.0f);
@@ -940,6 +950,7 @@ namespace AppleteaSystems.StageSyncSystem
             _localStartedSessionId = -1;
             _isStageOffsetLocked = false;
             _hasPendingLatencyUpdate = false;
+            _pendingForceLaunchWhenOwnerReady = false;
             _loadingStartTime = Time.time;
 
             if (_uiController != null)
@@ -1302,8 +1313,10 @@ namespace AppleteaSystems.StageSyncSystem
             }
 
             // 3. 全員の応答が揃った場合、またはタイムアウト時点で中止条件に該当しなかった場合は再生開始
-            if (isTimeout || (readyCount + failedCount >= totalExpected))
+            // また、Owner自身がyt-dlp解決中にForce Playが押されていた場合はOwnerの準備完了時点で即座に0.000sから開始
+            if (isTimeout || (readyCount + failedCount >= totalExpected) || (_pendingForceLaunchWhenOwnerReady && _localReadySessionId == _playbackSessionId))
             {
+                _pendingForceLaunchWhenOwnerReady = false;
                 TriggerStagePlaybackLaunch();
             }
         }
@@ -1311,6 +1324,7 @@ namespace AppleteaSystems.StageSyncSystem
         private void TriggerStagePlaybackLaunch()
         {
             if (!Networking.IsOwner(gameObject) || !_isWaitingForReady) return;
+            _pendingForceLaunchWhenOwnerReady = false;
             if (_uiController != null) _uiController.ConsumeForceLaunchIfOnce();
             BeginSynchronizedStagePlayback();
         }
@@ -1330,6 +1344,7 @@ namespace AppleteaSystems.StageSyncSystem
 
             _isWaitingForReady = false;
             _isStagePlaying = true;
+            _pendingForceLaunchWhenOwnerReady = false;
             _stageStartServerTime = Networking.GetServerTimeInMilliseconds();
             _stageStartedInFallback = _useFallbackDelay || (VRCPlayerApi.GetPlayerCount() < 2) || (HasActivePerformer() && !_hasMeasuredNetworkDelay);
             RequestSerialization();
@@ -1362,12 +1377,10 @@ namespace AppleteaSystems.StageSyncSystem
             {
                 Iwasync_core.TakeOwnership();
                 Iwasync_core.clockTime = _stageStartServerTime;
-                Iwasync_core.time = 0f;
-                if (_iwaSyncBridge != null)
+                if (Iwasync_core.isPlaying)
                 {
-                    _iwaSyncBridge.SeekDirect(0f);
+                    Iwasync_core.Play();
                 }
-                Iwasync_core.Play();
                 Iwasync_core.RequestSerialization();
             }
 #endif
@@ -1395,6 +1408,7 @@ namespace AppleteaSystems.StageSyncSystem
             _isStagePlaying = false;
             _isWaitingForCooldownLoad = false;
             _pendingLoadSessionId = -1;
+            _pendingForceLaunchWhenOwnerReady = false;
             _playingObjectIndex = -1;
             _stageStartServerTime = 0;
             _stageStartedInFallback = false;
@@ -1441,6 +1455,17 @@ namespace AppleteaSystems.StageSyncSystem
             // セッションID不一致、またはロード待機中でない場合は無視
             if (!_isWaitingForReady || _playbackSessionId != sessionId) return;
 
+            _ignoreThresholdError = true;
+            _ignorePerformerError = true;
+
+            // Owner自身がまだ新動画のURL解決(yt-dlp)またはクールダウン待機中の場合は、
+            // 旧ストリームの誤再生や5秒途中開始を防ぐため、Ownerの動画準備完了(OnVideoStart)と同時に0.000sから即時発火させる
+            if (_isWaitingForCooldownLoad || (_localReadySessionId != sessionId && !IsVideoPlayerPlaying()))
+            {
+                _pendingForceLaunchWhenOwnerReady = true;
+                return;
+            }
+
             // エラー判定をバイパスして直ちに上演開始を発火
             TriggerStagePlaybackLaunch();
         }
@@ -1462,6 +1487,7 @@ namespace AppleteaSystems.StageSyncSystem
                 _isStagePlaying = false;
                 _isWaitingForCooldownLoad = false;
                 _pendingLoadSessionId = -1;
+                _pendingForceLaunchWhenOwnerReady = false;
                 _playingObjectIndex = -1;
                 _stageStartServerTime = 0;
                 _stageStartedInFallback = false;
@@ -1491,6 +1517,7 @@ namespace AppleteaSystems.StageSyncSystem
             _isStagePlaying = false;
             _isWaitingForCooldownLoad = false;
             _pendingLoadSessionId = -1;
+            _pendingForceLaunchWhenOwnerReady = false;
             _playingObjectIndex = -1;
             _stageStartServerTime = 0;
             _stageStartedInFallback = false;
@@ -1516,6 +1543,7 @@ namespace AppleteaSystems.StageSyncSystem
 
             _isWaitingForCooldownLoad = false;
             _pendingLoadSessionId = -1;
+            _pendingForceLaunchWhenOwnerReady = false;
             _playbackSessionId = sessionId;
             _playingObjectIndex = objectIndex;
             _stageStartServerTime = startServerTime;
@@ -1529,15 +1557,15 @@ namespace AppleteaSystems.StageSyncSystem
                 _uiController.SetSettingsLocked(true);
             }
 
-            RestoreVideoPlayerVolume();
-            ResumeLocalVideoPlayer();
             ApplyOffset();
-            SeekLocalVideoToCurrentStageTime();
 
-            // 動画を正常に読み込めたプレイヤーのみ即座に演出を開始する。
-            // 読み込み失敗（後からリトライで読み込むプレイヤー）は演出のみが先行再生されないよう、OnVideoStart 時点で動画・演出を同時に開始する。
+            // 動画を正常に読み込めたプレイヤーのみ即座に音声復元・再生再開・シーク・演出を開始する。
+            // まだyt-dlp解決中またはリトライ待ちのプレイヤーは、旧動画の誤再生や先行発火を防ぐため OnVideoStart 時点で同時に開始する。
             if (IsVideoPlayerPlaying() || _localReadySessionId == sessionId)
             {
+                RestoreVideoPlayerVolume();
+                ResumeLocalVideoPlayer();
+                SeekLocalVideoToCurrentStageTime();
                 SyncActiveDirection(true);
                 SyncTimelineToTargetStageTime();
             }
@@ -2220,7 +2248,7 @@ namespace AppleteaSystems.StageSyncSystem
                 {
                     dirObj.gameObject.SetActive(true);
                 }
-                dirObj.playableDirector.time = GetCurrentVideoTime();
+                dirObj.playableDirector.time = _stageStartServerTime != 0 ? GetTargetStageVideoTime() : GetCurrentVideoTime();
                 dirObj.playableDirector.Play();
             }
             else
@@ -2328,9 +2356,13 @@ namespace AppleteaSystems.StageSyncSystem
                 _isInternalVideoStop = true;
                 Iwasync_core.Stop();
                 _isInternalVideoStop = false;
-                Iwasync_core.muted = true;
-                Iwasync_core.PlayURL(_MODE_VIDEO, dir.videoURL);
-                Iwasync_core.Pause();
+                if (!Iwasync_core.muted)
+                {
+                    Iwasync_core.muted = true;
+                }
+                // AVPro (_MODE_STREAM) を使用することで YamaPlayer と同等のサブミリ秒精度クロック・低ジッター同期を実現する。
+                // また yt-dlp による新URL解決完了前に Pause() を呼ぶと旧ストリームが再Prepareされるため、Pause は OnVideoStart で行う。
+                Iwasync_core.PlayURL(_MODE_STREAM, dir.videoURL);
                 Iwasync_core.RequestSerialization();
             }
 #endif
@@ -2373,12 +2405,14 @@ namespace AppleteaSystems.StageSyncSystem
 #if SSS_IWASYNC
             if (IsUsingIwaSync())
             {
-                Iwasync_core.Pause();
+                if (!Iwasync_core.paused)
+                {
+                    Iwasync_core.Pause();
+                }
                 if (_iwaSyncBridge != null)
                 {
                     _iwaSyncBridge.SeekDirect(0f);
                 }
-                Iwasync_core.time = 0f;
             }
 #endif
         }
@@ -2533,7 +2567,7 @@ namespace AppleteaSystems.StageSyncSystem
 
             if (IsVideoPlayerPlaying() && !IsVideoPlayerPaused())
             {
-                currentDir.playableDirector.time = GetCurrentVideoTime();
+                currentDir.playableDirector.time = _stageStartServerTime != 0 ? GetTargetStageVideoTime() : GetCurrentVideoTime();
             }
         }
 
@@ -2608,8 +2642,15 @@ namespace AppleteaSystems.StageSyncSystem
                 else
                 {
                     // 非OwnerはIwasync_core.Stop()を呼んではいけない（ローカルの_urlがEmptyに破棄されてしまうため）
-                    // 代わりに再生中であれば一時停止のみ行う
-                    Iwasync_core.Pause();
+                    // 代わりに再生中であれば一時停止し、基盤のハードウェアプレイヤーのみ直接停止して旧ストリームを閉じる
+                    if (!Iwasync_core.paused)
+                    {
+                        Iwasync_core.Pause();
+                    }
+                    if (_iwaSyncBridge != null)
+                    {
+                        _iwaSyncBridge.StopDirect();
+                    }
                 }
             }
 #endif
@@ -2632,13 +2673,19 @@ namespace AppleteaSystems.StageSyncSystem
 #if SSS_YAMAPLAYER
             if (IsUsingYamaPlayer())
             {
-                YamaPlayer_controller.Volume = vol;
+                if (Mathf.Abs(YamaPlayer_controller.Volume - vol) > 0.0005f)
+                {
+                    YamaPlayer_controller.Volume = vol;
+                }
             }
 #endif
 #if SSS_IWASYNC
             if (IsUsingIwaSync())
             {
-                Iwasync_core.volume = vol;
+                if (Mathf.Abs(Iwasync_core.volume - vol) > 0.0005f)
+                {
+                    Iwasync_core.volume = vol;
+                }
             }
 #endif
         }
@@ -2656,7 +2703,7 @@ namespace AppleteaSystems.StageSyncSystem
             }
             SetVideoPlayerVolume(0.0f);
 #if SSS_IWASYNC
-            if (IsUsingIwaSync())
+            if (IsUsingIwaSync() && !Iwasync_core.muted)
             {
                 Iwasync_core.muted = true;
             }
@@ -2673,7 +2720,7 @@ namespace AppleteaSystems.StageSyncSystem
                     SetVideoPlayerVolume(_volumeTemp);
                 }
 #if SSS_IWASYNC
-                if (IsUsingIwaSync())
+                if (IsUsingIwaSync() && Iwasync_core.muted)
                 {
                     Iwasync_core.muted = false;
                 }

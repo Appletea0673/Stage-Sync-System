@@ -109,8 +109,28 @@ namespace AppleteaSystems.StageSyncSystem
                 player.SetTime(targetTime);
             }
         }
+
+        public void StopDirect()
+        {
+            if (_unityVideoPlayer == null && _avProVideoPlayer == null)
+            {
+                FindVideoPlayers();
+            }
+            if (_unityVideoPlayer != null)
+            {
+                _unityVideoPlayer.Stop();
+            }
+            if (_avProVideoPlayer != null)
+            {
+                _avProVideoPlayer.Stop();
+            }
+        }
 #else
         public void SeekDirect(float targetTime)
+        {
+        }
+
+        public void StopDirect()
         {
         }
 #endif
