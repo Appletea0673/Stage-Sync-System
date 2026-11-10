@@ -185,6 +185,10 @@ flowchart TD
   * **一時的な通信切断・巨大スパイク**: 直近3サンプル最小値フィルタ（`_directedPairPrev1`, `_directedPairPrev2`）により、URL解決時等の正方向スパイク（数千ms）を自動除去
   * **プレイヤー途中退室**: `OnPlayerLeft` にて該当プレイヤーの履歴辞書・リストを即座に破棄し、残存メンバーで遅延を再集計
   * **上演中のステージ端移動**: 上演中は演者フラグ（`_isPerformer`）が強制ロックされ、一時的なコライダー退出によるオフセット急変・シーク乱れを防止。上演終了時に実際のエリア在室状態へ復旧
+  * **PING変動（ジッター）が大きい演者の遅延計算誤差に関する注意**: 
+    - 本システムは常時Ping通信によるネットワーク帯域逼迫や上演中のシーク乱れを抑えるため、演出の再生開始直後のタイミングでPing計測を行い動的遅延を決定・確定する仕様を採用している
+    - そのため、演者側の通信環境（無線Wi-Fi、回線不安定等）によりPINGの変動幅が大きい場合、計測瞬間のジッター（揺らぎ）が反映されて遅延計算の誤差が大きくなる可能性が高い
+    - 演者が極端に不安定なネットワーク環境にある場合は、演者側の有線LAN接続を推奨するか、UIから `Fallbackモード`（固定遅延）へ切り替えての運用を推奨
 * **既存モジュールとの依存関係**: 
   * 参照: `Networking.LocalPlayer`, `Networking.GetServerTimeInMilliseconds()`, `VRCPlayerApi`
   * 変更: `YamaPlayer_controller.LocalDelay`, `Iwasync_core.offsetTime`, `SSSUIController._delayStatusText`
@@ -312,12 +316,41 @@ flowchart TD
 
 * **機能の目的（ユースケース）**: 
   * シーン内に配置されている動画プレイヤーが YamaPlayer であっても iwaSync3 であっても、ワールド作者がスクリプトを書き換えることなく自動的に検知・連携して動作させる
+  * 各動画プレイヤーの内部同期仕様やライフサイクルの挙動差をシステム側で吸収し、同一の安定した上演同期を実現する
 * **入力（Input）**: 
   * **トリガー**: 各動画プレイヤーのライフサイクルイベント（Ready, Start, Play, Pause, Stop, Error, SetTime）
 * **出力（Output）**: 
-  * `SSSCore` の対応ハンドラ呼び出し（`OnVideoReady()`, `OnVideoStart()` 等）
+  * `SSSCore` の対応ハンドラ呼び出し（`OnVideoReady()`, `OnVideoStart()`, `OnVideoPlay()`, `OnVideoPause()`, `OnVideoStop()`, `OnVideoError()` 等）
+  * 動画プレイヤー側への再生制御（Play, Pause, Stop, SeekDirect, RequestSerialization）
+* **想定している処理フロー**: 
+  1. **自動検知とリスナー登録**: 起動時、シーン内の YamaPlayer (`Controller`) または iwaSync3 (`VideoCore`) を自動検知し、専用のBridgeコンポーネント（`SSSYamaBridge` / `SSSIwaSyncBridge`）を介してリスナー登録を実施
+  2. **ロード待機と0秒頭出し**: URLロード開始後、動画プレイヤーからの再生準備完了通知を受け取り、0.000秒地点で一時停止して全参加者の読み込みを待機
+  3. **同期上演開始**: 全員の準備完了またはForcePlay（進行不能回避）発火に伴い、両プレイヤー固有の同期プロトコルに従って一斉上演を開始
+* **YamaPlayer版とiwaSync3版の振る舞い・アーキテクチャの違い**: 
+  * **シーク・同期方式の違い**: 
+    - **YamaPlayer**: `VideoPlayerHandle.VideoTime` への代入によってシークを実行。同一フレーム内で `VideoTime` 代入と `ForceSync()` を同時に連打するとAVPro Videoデコーダが競合・フリーズするため、`_stageStartServerTime` 基準の単一シーク＋1秒後フォースシンクの2段階制御を採用。オフセットは `LocalDelay` に秒単位で適用
+    - **iwaSync3**: `Iwasync_core.time` に目標時間を直接代入すると内部の `_time` に値が保持され、iwaSync3内部の定期同期（`SyncTimePeriodic`）における経過時間計算（`Now - _clockTime`）と二重加算されて約10秒のスキップ（タイムワープ）が発生する。そのため、`Iwasync_core.time` には直接代入せず、Bridge経由で下位のハードウェアプレイヤー（AVPro / UnityVideo）を直接シーク（`SeekDirect`）し、`_time = 0f` かつ `_clockTime = _stageStartServerTime` を維持。オフセットは `offsetTime` に適用
+  * **一時停止・頭出し待機（0秒停止）の違い**: 
+    - **YamaPlayer**: `PlayURL` で再生を開始し、`OnVideoStart` 時に `VideoPlayerHandle.Pause()` ＋ `VideoPlayerHandle.VideoTime = 0f` を実行して頭出し待機
+    - **iwaSync3**: `Play()` で再生開始（`isModeStream` AVPro）。yt-dlp解決前にPauseを呼ぶとストリーム再取得ループ（再Prepare）に陥るため、`OnVideoStart` のタイミングで `Pause()` ＋ `SeekDirect(0f)` を実行して頭出し待機
+  * **停止処理とURL保護の違い**: 
+    - **YamaPlayer**: Ownerが `Stopped = true` をセットし `RequestSerialization()` を呼ぶことで全体停止を同期
+    - **iwaSync3**: 非Ownerクライアントが `Iwasync_core.Stop()` を呼ぶとローカルに保持されている `_url` が破棄され、その後の強制再生やリトライが不可能になる。そのため非Ownerでは `Stop()` を呼ばず、`Pause()` およびBridge経由のハードウェアプレイヤー直接停止（`SeekDirect(0f)` / `StopDirect()`）でローカル制御を実施
+* **ForcePlay（Force Launch / 即時強制上演）を押したときの挙動**: 
+  * **位置づけ**: 誰かが動画を読み込めないことによる進行不能を回避するため、エラー閾値（50%失敗）や演者のロードエラーを無視して強制的に上演を開始する安全策
+  * **URL解決中・クールダウン待機中の一時保留（共通挙動）**: 
+    - Owner自身が新動画のURL解決（yt-dlp）中、またはVRChat APIの5秒クールダウン待機中である場合、即座に発火すると旧ストリームが誤再生されたり途中から再生される事故が発生する
+    - そのため、直ちに再生せず `_pendingForceLaunchWhenOwnerReady = true` として一時保留し、Ownerの動画準備完了（`OnVideoStart` / `OnVideoReady`）を検知した瞬間に0.000sから即時発火
+  * **YamaPlayer版でのForcePlay挙動**: 
+    - **Owner失敗時の巻き添え停止防止**: Owner自身が読み込み失敗（`Stopped == true`）している状態で `YamaPlayer_controller.RequestSerialization()` を呼ぶと、`_stopped = true` がインスタンス全員へ同期され、正常に読み込めていた他プレイヤーの動画まで一斉停止（巻き添え）してしまう。これを防止するため、Owner自身が正常に読み込み完了している場合のみシリアライズ（`SetTime(0f)`, `Paused = false`, `SyncTime = 0f`, `RequestSerialization()`）を発火。Owner自身がエラー（リトライ待ち）の場合はシリアライズを呼ばず、ローカルの `_paused` 解除（`OnVideoPlay()`）のみを行う
+    - **遅延リトライ時の再停止防止**: `ResumeLocalVideoPlayer()` において、エラー後のリトライ待ち中（`Stopped == true`）であっても内部の `_paused` を事前に解除しておくことで、後からリトライ成功した際に `Controller.OnVideoStart` で再びPauseされてしまう事故を防止
+  * **iwaSync3版でのForcePlay挙動**: 
+    - **TakeOwnership と clockTime 同期**: Ownerが `Iwasync_core.TakeOwnership()` を実行し、`clockTime = _stageStartServerTime` をセットして `RequestSerialization()` をブロードキャスト。全クライアントでサーバー時刻基準の一斉再生を発火
+    - **非OwnerのURL保護と直接制御**: 非Owner側ではURL破棄を防ぐため `Stop()` は呼ばず、Bridge経由で下位プレイヤーを直接制御（`SeekDirect`）することで安全かつ即座に再生を開始
+* **異常系・エッジケースの扱い**: 
+  * **未導入環境への配慮**: YamaPlayerまたはiwaSync3がプロジェクトに導入されていない場合でも、プリプロセッサ分岐（`SSS_YAMAPLAYER`, `SSS_IWASYNC`）によりBridgeスクリプトが安全に空実装としてコンパイルされ、コンパイルエラーやPrefab破損を防止
 * **既存モジュールとの依存関係**: 
-  * 参照: `Yamadev.YamaStream.Controller`, `HoshinoLabs.IwaSync3.Udon.VideoCore`
+  * 参照: `Yamadev.YamaStream.Controller`, `HoshinoLabs.IwaSync3.Udon.VideoCore`, `SSSCore`, `SSSYamaBridge`, `SSSIwaSyncBridge`
 
 ---
 
@@ -417,6 +450,9 @@ flowchart TD
 3. **VRChat 動画ロードAPIの5秒レートリミット**: 
    - 動画プレイヤーへのURL投入APIにはプラットフォーム全体で5秒のクールダウンが存在（短時間での連続ロードは `VideoError.RateLimited` で弾かれる）
    - 本システムでは5.25秒のクールダウンキュー管理によりこれを完全回避
+4. **演者の回線品質・ジッター（PING変動）による動的遅延の計算誤差**: 
+   - 上演中の不要なシークや通信帯域圧迫を防止するため再生開始直後にPingを計測して遅延を算出・確定する仕様上、演者側のPING変動（ジッター）が大きい場合は、その瞬間の揺らぎによって算出したオフセットの誤差が大きくなる可能性が高い
+   - 安定した同期上演には演者側の有線LAN環境が推奨され、回線が極端に乱高下する環境ではFallbackモード（固定オフセット）での運用を推奨
 
 ---
 
