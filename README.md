@@ -52,9 +52,16 @@
 ## 内容物
 ```
 Assets/Appletea's Item/Stage Sync System/v2.0/
+├─ Demo Direction/                      # 動作確認・タイミング検証用サンプル演出
+│  └─ Timing Test/                      # 音ズレ・遅延検証用テストシーンアセット
+│     ├─ Material/                      # デモ用マテリアル
+│     ├─ TimeLine and Animation/        # テスト用Timelineアセット
+│     └─ Timing Test.prefab             # タイミングテスト用演出プレハブ
 ├─ Editor/
+│  ├─ SSSVideoPlayerDefineManager.cs    # 動画プレイヤー依存関係検知・Defineシンボル自動構成
 │  └─ StageSyncSystem_Editor.cs         # インスペクター拡張・UI自動生成・ビルド前処理
-├─ Material/
+├─ Material/                            # UI・ステージコライダー・端末用マテリアル
+├─ Model/                               # 演者端末・UI用3Dモデル (FBX)
 ├─ Script/
 │  ├─ DirectionController.cs            # ルートコンポーネント (エディタ連携・互換性)
 │  ├─ DirectionObject.cs                # 演出オブジェクト定義コンポーネント
@@ -70,12 +77,15 @@ Assets/Appletea's Item/Stage Sync System/v2.0/
 │  ├─ SSSUIController.cs                # インワールドUI管理・ソート・進行不能回避オーバーライド
 │  ├─ SSSYamaBridge.cs                  # YamaPlayer イベント受信ブリッジ
 │  └─ UIOperatorChecker.cs              # UI操作可能エリア判定・外部Raycast遮断
-├─ Texture/                             # UIスプライト・アイコン画像群
+├─ Texture/                             # システムロゴ・UIアイコン・スプライト画像群
+├─ Sample Directions.prefab             # サンプル演出オブジェクト一式プレハブ
 └─ Stage Sync System.prefab             # システム全体を包括したオールインワンプレハブ
 ```
 
 ## 使い方
 ### 導入方法
+![How to Setting Stage Sync System](Images/How%20to%20Setting%20Stage%20Sync%20System%20.png)
+
 1. **Prefabの配置**
    Scene上に `Stage Sync System.prefab` を配置
 2. **エリアとUIの配置**
@@ -92,6 +102,8 @@ Assets/Appletea's Item/Stage Sync System/v2.0/
    `Stage Sync System` のルートを選択し、インスペクターの「パラメータ設定 (Manual Parameters)」から基本システム遅延、タイムアウト秒数、上演中断エラー率閾値（%）などを自由に調整可能
 
 ### 演出・動画の登録ガイド
+![How to Setting Direction](Images/How%20to%20Setting%20Direction.png)
+
 1. **空のGameObjectを作成**
    Hierarchy上で右クリックし、「Create Empty」で空のGameObjectを作成（曲名など分かりやすい名前にリネーム）
 2. **DirectionObjectをアタッチ**
